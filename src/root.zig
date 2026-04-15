@@ -11,6 +11,7 @@ pub const Value = @import("Value.zig");
 pub const Evaluator = @import("Evaluator.zig");
 pub const Scope = @import("Scope.zig");
 pub const err = @import("error.zig");
+pub const stringify = @import("stringify.zig");
 
 // Internal modules (referenced by evaluator)
 comptime {
