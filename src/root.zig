@@ -23,6 +23,8 @@ comptime {
     _ = @import("eval_types.zig");
     _ = @import("eval_exprs.zig");
     _ = @import("stdlib.zig");
+    _ = @import("eval_test.zig");
+    _ = @import("conformance.zig");
 }
 
 // ── Public API types ────────────────────────────────────────

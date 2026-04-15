@@ -258,6 +258,27 @@ fn scanInterpolation(self: *Lexer) !void {
         return;
     }
 
+    // Handle escaped-quote delimited strings inside interpolation: \"..\"
+    // When inside interpolation within a string, quotes must be escaped
+    // because unescaped " would end the outer string.
+    if (c == '\\' and self.pos + 1 < self.source.len and self.source[self.pos + 1] == '"') {
+        self.advance(); // skip backslash
+        self.advance(); // skip opening quote
+        const str_start = self.pos;
+        while (self.pos < self.source.len) {
+            if (self.source[self.pos] == '\\' and self.pos + 1 < self.source.len and self.source[self.pos + 1] == '"') {
+                const content = self.source[str_start..self.pos];
+                try self.emit(.string, content, start_line, start_col);
+                self.advance(); // skip backslash
+                self.advance(); // skip closing quote
+                return;
+            }
+            self.advance();
+        }
+        try self.emit(.string, self.source[str_start..self.pos], start_line, start_col);
+        return;
+    }
+
     try self.scanNormal();
 }
 

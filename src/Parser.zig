@@ -196,7 +196,11 @@ fn parseAreBinding(self: *Parser, name: []const u8, s: Ast.Span) Error!Ast.Bindi
         if (!self.at(.comma)) break;
         _ = self.advance();
         self.skipNewlines();
-        if (self.at(.eof) or self.at(.r_brace) or self.at(.r_bracket) or self.at(.r_paren) or self.at(.called)) break;
+        // §3.4.1: `are` does not permit trailing commas
+        if (self.at(.eof) or self.at(.r_brace) or self.at(.r_bracket) or self.at(.r_paren) or self.at(.called)) {
+            const t = self.tokens[self.pos];
+            return self.fail("trailing comma in 'are' binding", t.line, t.col);
+        }
         try elements.append(self.allocator, try self.parseExpression());
     }
 
