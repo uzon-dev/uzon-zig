@@ -766,12 +766,19 @@ pub fn evalStructImport(self: *Evaluator, path: []const u8, span: Ast.Span) Eval
 
     const last_component = if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep| path[sep + 1 ..] else path;
     const has_ext = std.mem.indexOfScalar(u8, last_component, '.') != null;
-    const import_file = if (has_ext)
+    const raw_path = if (has_ext)
         (std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ base, path }) catch return error.OutOfMemory)
     else
         (std.fmt.allocPrint(self.allocator, "{s}/{s}.uzon", .{ base, path }) catch return error.OutOfMemory);
 
-    if (self.import_cache.get(import_file)) |cached| return cached;
+    // Normalize path to detect circular imports regardless of relative path representation
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const import_file = self.allocator.dupe(u8, std.fs.cwd().realpath(raw_path, &real_buf) catch raw_path) catch return error.OutOfMemory;
+
+    if (self.import_cache.get(import_file)) |cached| {
+        if (self.import_type_cache.get(import_file)) |types| self.last_import_types = types;
+        return cached;
+    }
     for (self.import_stack.items) |active| if (std.mem.eql(u8, active, import_file))
         return self.circErr("circular file import detected", span.line, span.col);
 
@@ -823,6 +830,7 @@ pub fn evalStructImport(self: *Evaluator, path: []const u8, span: Ast.Span) Eval
 
     self.last_import_types = import_type_scope.types;
     self.import_cache.put(self.allocator, import_file, val_result) catch {};
+    self.import_type_cache.put(self.allocator, import_file, import_type_scope.types) catch {};
     if (self.last_error == null) self.last_error = saved_error;
     return val_result;
 }

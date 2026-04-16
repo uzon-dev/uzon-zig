@@ -19,6 +19,7 @@ last_error: ?UzonError,
 call_stack: std.ArrayListUnmanaged(*const Ast.Node),
 base_dir: ?[]const u8 = null,
 import_cache: std.StringArrayHashMapUnmanaged(Value) = .{},
+import_type_cache: std.StringArrayHashMapUnmanaged(std.StringHashMapUnmanaged(*const val.TypeDef)) = .{},
 import_stack: std.ArrayListUnmanaged([]const u8) = .{},
 last_import_types: std.StringHashMapUnmanaged(*const val.TypeDef) = .{},
 
