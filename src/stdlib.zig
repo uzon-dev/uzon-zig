@@ -34,7 +34,11 @@ pub fn evalStdlibCall(self: *Evaluator, func_name: []const u8, arg_nodes: []cons
     if (std.mem.eql(u8, func_name, "isInf")) return stdIsInf(self, args, span);
     if (std.mem.eql(u8, func_name, "isFinite")) return stdIsFinite(self, args, span);
     if (std.mem.eql(u8, func_name, "contains")) return stdContains(self, args, span);
+    if (std.mem.eql(u8, func_name, "startsWith")) return stdStartsWith(self, args, span);
+    if (std.mem.eql(u8, func_name, "endsWith")) return stdEndsWith(self, args, span);
     if (std.mem.eql(u8, func_name, "reverse")) return stdReverse(self, args, span);
+    if (std.mem.eql(u8, func_name, "all")) return stdAll(self, args, span);
+    if (std.mem.eql(u8, func_name, "any")) return stdAny(self, args, span);
     if (std.mem.eql(u8, func_name, "map")) return stdMap(self, args, span);
     if (std.mem.eql(u8, func_name, "filter")) return stdFilter(self, args, span);
     if (std.mem.eql(u8, func_name, "reduce")) return stdReduce(self, args, span);
@@ -305,6 +309,34 @@ fn stdContains(self: *Evaluator, args: []const Value, span: Ast.Span) EvalError!
     return Value.boolean(std.mem.indexOf(u8, haystack, needle) != null);
 }
 
+fn stdStartsWith(self: *Evaluator, args: []const Value, span: Ast.Span) EvalError!Value {
+    try expectArgs(self, args, 2, span);
+    const str = switch (args[0]) {
+        .string => |s| s,
+        else => return self.typeErr("std.startsWith requires string as first argument", span.line, span.col),
+    };
+    const prefix = switch (args[1]) {
+        .string => |s| s,
+        else => return self.typeErr("std.startsWith prefix must be string", span.line, span.col),
+    };
+    if (prefix.len == 0) return Value.boolean(true);
+    return Value.boolean(std.mem.startsWith(u8, str, prefix));
+}
+
+fn stdEndsWith(self: *Evaluator, args: []const Value, span: Ast.Span) EvalError!Value {
+    try expectArgs(self, args, 2, span);
+    const str = switch (args[0]) {
+        .string => |s| s,
+        else => return self.typeErr("std.endsWith requires string as first argument", span.line, span.col),
+    };
+    const suffix = switch (args[1]) {
+        .string => |s| s,
+        else => return self.typeErr("std.endsWith suffix must be string", span.line, span.col),
+    };
+    if (suffix.len == 0) return Value.boolean(true);
+    return Value.boolean(std.mem.endsWith(u8, str, suffix));
+}
+
 fn stdReverse(self: *Evaluator, args: []const Value, span: Ast.Span) EvalError!Value {
     try expectArgs(self, args, 1, span);
     return switch (args[0]) {
@@ -331,6 +363,48 @@ fn stdReverse(self: *Evaluator, args: []const Value, span: Ast.Span) EvalError!V
         },
         else => self.typeErr("std.reverse requires list or string", span.line, span.col),
     };
+}
+
+fn stdAll(self: *Evaluator, args: []const Value, span: Ast.Span) EvalError!Value {
+    try expectArgs(self, args, 2, span);
+    const l = switch (args[0]) {
+        .list => |ll| ll,
+        else => return self.typeErr("std.all requires list as first argument", span.line, span.col),
+    };
+    const func = switch (args[1]) {
+        .function => |f| f,
+        else => return self.typeErr("std.all requires function as second argument", span.line, span.col),
+    };
+    if (l.elements.len == 0) return Value.boolean(true);
+    for (l.elements) |elem| {
+        const r = try callFunction(self, func, &.{elem}, span);
+        switch (r) {
+            .bool_val => |bv| if (!bv) return Value.boolean(false),
+            else => return self.typeErr("std.all predicate must return bool", span.line, span.col),
+        }
+    }
+    return Value.boolean(true);
+}
+
+fn stdAny(self: *Evaluator, args: []const Value, span: Ast.Span) EvalError!Value {
+    try expectArgs(self, args, 2, span);
+    const l = switch (args[0]) {
+        .list => |ll| ll,
+        else => return self.typeErr("std.any requires list as first argument", span.line, span.col),
+    };
+    const func = switch (args[1]) {
+        .function => |f| f,
+        else => return self.typeErr("std.any requires function as second argument", span.line, span.col),
+    };
+    if (l.elements.len == 0) return Value.boolean(false);
+    for (l.elements) |elem| {
+        const r = try callFunction(self, func, &.{elem}, span);
+        switch (r) {
+            .bool_val => |bv| if (bv) return Value.boolean(true),
+            else => return self.typeErr("std.any predicate must return bool", span.line, span.col),
+        }
+    }
+    return Value.boolean(false);
 }
 
 fn stdMap(self: *Evaluator, args: []const Value, span: Ast.Span) EvalError!Value {
