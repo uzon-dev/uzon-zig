@@ -5,12 +5,12 @@ const Scope = @import("Scope.zig");
 /// Compute topological evaluation order for bindings (Kahn's algorithm).
 /// Returns indices into `bindings` in evaluation order.
 /// Returns error.UzonCircular if a cycle is detected (§11.2).
-/// On cycle, `cycle_idx` is set to the index of a binding participating in the cycle.
+/// On cycle, `cycle_indices` is populated with all binding indices participating in cycles.
 pub fn topologicalSort(
     allocator: std.mem.Allocator,
     bindings: []const Ast.Binding,
     scope: *const Scope,
-    cycle_idx: *usize,
+    cycle_indices: *std.ArrayListUnmanaged(usize),
 ) ![]usize {
     const n = bindings.len;
     if (n == 0) return &.{};
@@ -60,25 +60,19 @@ pub fn topologicalSort(
     }
 
     if (result.items.len != n) {
-        // Find first binding still in the cycle (in_degree > 0)
         for (0..n) |i| {
-            if (in_degree[i] > 0) {
-                cycle_idx.* = i;
-                return error.UzonCircular;
-            }
+            if (in_degree[i] > 0) try cycle_indices.append(allocator, i);
         }
-        cycle_idx.* = 0;
-        return error.UzonCircular;
     }
     return result.items;
 }
 
 /// Check that the function call graph is a DAG (no recursion, §3.8).
-/// On cycle, `cycle_name` is set to the name of a function in the cycle.
+/// On cycle, `cycle_names` is populated with all function names participating in cycles.
 pub fn checkFunctionCallDag(
     allocator: std.mem.Allocator,
     bindings: []const Ast.Binding,
-    cycle_name: *?[]const u8,
+    cycle_names: *std.ArrayListUnmanaged([]const u8),
 ) !void {
     var func_names = std.StringHashMapUnmanaged(void){};
     for (bindings) |b| {
@@ -104,8 +98,14 @@ pub fn checkFunctionCallDag(
     while (it.next()) |name| {
         if ((color.get(name.*) orelse 0) == 0) {
             if (dfsCycle(name.*, &graph, &color, allocator)) {
-                cycle_name.* = name.*;
-                return error.UzonCircular;
+                // Collect all gray (cycle-participating) nodes
+                var color_it = color.iterator();
+                while (color_it.next()) |entry| {
+                    if (entry.value_ptr.* == 1) {
+                        try cycle_names.append(allocator, entry.key_ptr.*);
+                        entry.value_ptr.* = 2; // mark black to avoid re-reporting
+                    }
+                }
             }
         }
     }

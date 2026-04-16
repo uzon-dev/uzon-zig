@@ -809,8 +809,10 @@ pub fn evalStructImport(self: *Evaluator, path: []const u8, span: Ast.Span) Eval
 
     const saved_base = self.base_dir;
     const saved_error = self.last_error;
+    const saved_collected = self.collected_errors;
     self.base_dir = import_dir;
     self.last_error = null;
+    self.collected_errors = .{};
 
     var import_type_scope = Scope.init(self.allocator);
     const result = self.evalDocumentInScope(doc, &import_type_scope);
@@ -819,10 +821,15 @@ pub fn evalStructImport(self: *Evaluator, path: []const u8, span: Ast.Span) Eval
     _ = self.import_stack.pop();
 
     const val_result = result catch {
+        // Don't propagate the imported file's internal errors (circular deps,
+        // recursive functions) — they belong to that file, not the importer.
+        // Only propagate a single import-level error.
+        self.collected_errors = saved_collected;
+
         if (self.last_error) |*eval_err| {
             if (eval_err.location.filename == null) eval_err.location.filename = import_file;
             eval_err.import_trace.append(eval_err.allocator, .{ .line = span.line, .col = span.col, .filename = self.currentFilename() }) catch {};
-            return error.UzonType;
+            return error.UzonCircular;
         }
         self.last_error = saved_error;
         return self.rtErr("evaluation error in imported file", span.line, span.col);
@@ -832,5 +839,6 @@ pub fn evalStructImport(self: *Evaluator, path: []const u8, span: Ast.Span) Eval
     self.import_cache.put(self.allocator, import_file, val_result) catch {};
     self.import_type_cache.put(self.allocator, import_file, import_type_scope.types) catch {};
     if (self.last_error == null) self.last_error = saved_error;
+    self.collected_errors = saved_collected;
     return val_result;
 }

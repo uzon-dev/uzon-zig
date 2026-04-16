@@ -49,11 +49,11 @@ fn runEvalTest(allocator: std.mem.Allocator, dir_path: []const u8, filename: []c
 
     const result = switch (root.parseWithBaseDir(allocator, input_source, dir_path)) {
         .value => |v| v,
-        .err => return .fail,
+        .errors => return .fail,
     };
     const expected = switch (root.parseWithBaseDir(allocator, expected_source, dir_path)) {
         .value => |v| v,
-        .err => return .skip,
+        .errors => return .skip,
     };
 
     // Every key in expected must match in result.
@@ -118,7 +118,7 @@ fn runParseValidTest(allocator: std.mem.Allocator, path: []const u8) !TestResult
         ".";
     return switch (root.parseWithBaseDir(allocator, source, file_dir)) {
         .value => .pass,
-        .err => .fail,
+        .errors => .fail,
     };
 }
 
@@ -178,7 +178,7 @@ fn runParseInvalidTest(allocator: std.mem.Allocator, path: []const u8) !TestResu
         ".";
     return switch (root.parseWithBaseDir(allocator, source, file_dir)) {
         .value => .fail, // should have errored
-        .err => .pass,
+        .errors => .pass,
     };
 }
 
@@ -235,12 +235,12 @@ fn runRoundtripTest(allocator: std.mem.Allocator, path: []const u8) !TestResult 
 
     const val1 = switch (root.parse(allocator, source)) {
         .value => |v| v,
-        .err => return .skip,
+        .errors => return .skip,
     };
     const text = root.stringify(allocator, val1) catch return .fail;
     const val2 = switch (root.parse(allocator, text)) {
         .value => |v| v,
-        .err => return .fail,
+        .errors => return .fail,
     };
     return if (h.valuesEqual(val1, val2)) .pass else .fail;
 }

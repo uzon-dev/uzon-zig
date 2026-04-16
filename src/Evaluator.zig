@@ -16,6 +16,7 @@ const Evaluator = @This();
 
 allocator: std.mem.Allocator,
 last_error: ?UzonError,
+collected_errors: std.ArrayListUnmanaged(UzonError) = .{},
 call_stack: std.ArrayListUnmanaged(*const Ast.Node),
 base_dir: ?[]const u8 = null,
 import_cache: std.StringArrayHashMapUnmanaged(Value) = .{},
@@ -104,34 +105,65 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
 
     if (parent_scope) |ps| scope.parent = ps;
 
-    var cycle_idx: usize = 0;
-    const order = deps.topologicalSort(self.allocator, bindings, scope, &cycle_idx) catch |e| switch (e) {
-        error.UzonCircular => return self.circErr("circular dependency detected", bindings[cycle_idx].span.line, bindings[cycle_idx].span.col),
-        error.OutOfMemory => return error.OutOfMemory,
-    };
+    // Pre-evaluation static checks: collect ALL cycle errors, then continue
+    // evaluating non-cycle bindings so struct import cycles are also discovered.
 
-    var cycle_name: ?[]const u8 = null;
-    deps.checkFunctionCallDag(self.allocator, bindings, &cycle_name) catch |e| switch (e) {
-        error.UzonCircular => {
-            if (cycle_name) |name| {
-                for (bindings) |b| {
-                    if (std.mem.eql(u8, b.name, name))
-                        return self.typeErr("recursive function call detected", b.span.line, b.span.col);
-                }
+    var cycle_indices = std.ArrayListUnmanaged(usize){};
+    const order = try deps.topologicalSort(self.allocator, bindings, scope, &cycle_indices);
+
+    for (cycle_indices.items) |idx| {
+        self.collected_errors.append(self.allocator, UzonError.circularError(
+            self.allocator,
+            "circular dependency detected",
+            bindings[idx].span.line,
+            bindings[idx].span.col,
+        )) catch {};
+    }
+
+    var cycle_names = std.ArrayListUnmanaged([]const u8){};
+    try deps.checkFunctionCallDag(self.allocator, bindings, &cycle_names);
+
+    var fn_cycle_set = std.StringHashMapUnmanaged(void){};
+    for (cycle_names.items) |name| {
+        fn_cycle_set.put(self.allocator, name, {}) catch {};
+        for (bindings) |b| {
+            if (std.mem.eql(u8, b.name, name)) {
+                self.collected_errors.append(self.allocator, UzonError.typeError(
+                    self.allocator,
+                    "recursive function call detected",
+                    b.span.line,
+                    b.span.col,
+                )) catch {};
+                break;
             }
-            return self.typeErr("recursive function call detected", bindings[0].span.line, bindings[0].span.col);
-        },
-        error.OutOfMemory => return error.OutOfMemory,
-    };
+        }
+    }
 
+    // Evaluate non-cycle bindings using partial topological order.
+    var had_nested_circular = false;
     for (order) |idx| {
         const binding = bindings[idx];
+        // Skip function-cycle participants (already reported above)
+        if (fn_cycle_set.contains(binding.name)) continue;
+
         if (binding.value.kind == .undefined_literal)
             return self.typeErr("undefined cannot be used as a literal value", binding.span.line, binding.span.col);
         if (binding.value.kind == .env_ref)
             return self.typeErr("standalone env is not a value; use env.VARIABLE_NAME", binding.span.line, binding.span.col);
 
-        const value = try self.evalNode(binding.value, scope, binding.name);
+        const pre_count = self.collected_errors.items.len;
+        const value = self.evalNode(binding.value, scope, binding.name) catch |e| switch (e) {
+            error.UzonCircular => {
+                // circErr (e.g. circular file import) sets last_error only.
+                // Promote it to collected_errors so it survives the had_nested_circular path.
+                if (self.collected_errors.items.len == pre_count) {
+                    if (self.last_error) |le| self.collected_errors.append(self.allocator, le) catch {};
+                }
+                had_nested_circular = true;
+                continue;
+            },
+            else => return e,
+        };
 
         if (value == .list and value.list.elements.len == 0 and value.list.element_type == null)
             if (binding.value.kind == .list_literal)
@@ -180,6 +212,11 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
                 }
             }
         }
+    }
+
+    if (cycle_indices.items.len > 0 or fn_cycle_set.count() > 0 or had_nested_circular) {
+        self.last_error = if (self.collected_errors.items.len > 0) self.collected_errors.getLast() else null;
+        return error.UzonCircular;
     }
 
     // Post-pass: validate function parameter type names

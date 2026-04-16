@@ -33,11 +33,17 @@ pub const Error = err.Error;
 pub const UzonError = err.UzonError;
 pub const Location = err.Location;
 
-/// Parse result: either a value or a detailed error.
+/// Parse result: either a value or one or more detailed errors.
 pub const ParseResult = union(enum) {
     value: Value,
-    err: UzonError,
+    errors: []UzonError,
 };
+
+fn singleError(allocator: std.mem.Allocator, e: UzonError) ParseResult {
+    const slice = allocator.alloc(UzonError, 1) catch return .{ .errors = &.{} };
+    slice[0] = e;
+    return .{ .errors = slice };
+}
 
 // ── Parsing ─────────────────────────────────────────────────
 
@@ -48,22 +54,29 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) ParseResult {
 
 /// Parse a UZON source string with a base directory for file imports.
 pub fn parseWithBaseDir(allocator: std.mem.Allocator, source: []const u8, base_dir: ?[]const u8) ParseResult {
+    return parseWithOptions(allocator, source, base_dir, null);
+}
+
+fn parseWithOptions(allocator: std.mem.Allocator, source: []const u8, base_dir: ?[]const u8, entry_file: ?[]const u8) ParseResult {
     // Lex
     var lexer = Lexer.init(allocator, source);
     const tokens = lexer.tokenize() catch
-        return .{ .err = UzonError.syntaxError(allocator, "out of memory", 0, 0) };
+        return singleError(allocator, UzonError.syntaxError(allocator, "out of memory", 0, 0));
 
     // Parse
     var parser = Parser.init(allocator, tokens, lexer.comment_lines.items);
     const doc = parser.parse() catch {
-        return .{ .err = parser.last_error orelse UzonError.syntaxError(allocator, "unknown parse error", 0, 0) };
+        return singleError(allocator, parser.last_error orelse UzonError.syntaxError(allocator, "unknown parse error", 0, 0));
     };
 
     // Evaluate
     var evaluator = Evaluator.init(allocator);
     evaluator.base_dir = base_dir;
+    if (entry_file) |ef| evaluator.import_stack.append(allocator, ef) catch {};
     const value = evaluator.evalDocument(doc) catch {
-        return .{ .err = evaluator.last_error orelse UzonError.runtimeError(allocator, "unknown evaluation error", 0, 0) };
+        if (evaluator.collected_errors.items.len > 0)
+            return .{ .errors = evaluator.collected_errors.items };
+        return singleError(allocator, evaluator.last_error orelse UzonError.runtimeError(allocator, "unknown evaluation error", 0, 0));
     };
     return .{ .value = value };
 }
@@ -71,19 +84,24 @@ pub fn parseWithBaseDir(allocator: std.mem.Allocator, source: []const u8, base_d
 /// Parse and evaluate a UZON file.
 pub fn parseFile(allocator: std.mem.Allocator, path: []const u8) ParseResult {
     const file = std.fs.cwd().openFile(path, .{}) catch
-        return .{ .err = UzonError.runtimeError(allocator, "cannot open file", 0, 0) };
+        return singleError(allocator, UzonError.runtimeError(allocator, "cannot open file", 0, 0));
     defer file.close();
     const source = file.readToEndAlloc(allocator, 1024 * 1024 * 16) catch
-        return .{ .err = UzonError.runtimeError(allocator, "cannot read file", 0, 0) };
-    const base_dir = if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep_idx|
-        path[0..sep_idx]
+        return singleError(allocator, UzonError.runtimeError(allocator, "cannot read file", 0, 0));
+    // Normalize the file path so it matches realpath-resolved import paths
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = allocator.dupe(u8, std.fs.cwd().realpath(path, &real_buf) catch path) catch path;
+    const base_dir = if (std.mem.lastIndexOfScalar(u8, real_path, '/')) |sep_idx|
+        real_path[0..sep_idx]
     else
         ".";
-    var result = parseWithBaseDir(allocator, source, base_dir);
-    // Attach filename to error if not already set by an import
+    const result = parseWithOptions(allocator, source, base_dir, real_path);
+    // Attach filename to errors if not already set by an import
     switch (result) {
-        .err => |*e| {
-            if (e.location.filename == null) e.location.filename = path;
+        .errors => |errs| {
+            for (errs) |*e| {
+                if (e.location.filename == null) e.location.filename = real_path;
+            }
         },
         .value => {},
     }
@@ -109,7 +127,7 @@ pub fn parseInto(comptime T: type, allocator: std.mem.Allocator, source: []const
     const result = parse(allocator, source);
     const value = switch (result) {
         .value => |v| v,
-        .err => return error.UzonSyntax,
+        .errors => return error.UzonSyntax,
     };
     return try parse_into.fromValue(T, allocator, value);
 }
@@ -119,7 +137,7 @@ pub fn parseFileInto(comptime T: type, allocator: std.mem.Allocator, path: []con
     const result = parseFile(allocator, path);
     const value = switch (result) {
         .value => |v| v,
-        .err => return error.UzonSyntax,
+        .errors => return error.UzonSyntax,
     };
     return try parse_into.fromValue(T, allocator, value);
 }
@@ -258,4 +276,43 @@ test "end-to-end parseInto" {
     try std.testing.expectEqual(@as(usize, 2), config.tags.len);
     try std.testing.expectEqualStrings("web", config.tags[0]);
     try std.testing.expectEqualStrings("prod", config.tags[1]);
+}
+
+test "multiple circular dependency errors" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const source =
+        \\a is b
+        \\b is a
+        \\c is d
+        \\d is c
+    ;
+
+    const result = parse(a, source);
+    switch (result) {
+        .errors => |errs| {
+            // All four bindings participate in cycles — should get multiple errors
+            try std.testing.expect(errs.len >= 2);
+            for (errs) |e| {
+                try std.testing.expectEqual(err.ErrorKind.circular, e.kind);
+            }
+        },
+        .value => return error.TestExpectedEqual,
+    }
+}
+
+test "single error still works" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const result = parse(a, "x is 1 +");
+    switch (result) {
+        .errors => |errs| {
+            try std.testing.expectEqual(@as(usize, 1), errs.len);
+        },
+        .value => return error.TestExpectedEqual,
+    }
 }
