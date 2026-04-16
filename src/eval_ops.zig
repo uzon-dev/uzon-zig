@@ -224,6 +224,10 @@ fn evalRelational(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *
         return undefinedErr(self, "undefined value in comparison", ln, rn, raw_l, raw_r, span);
     if (raw_l == .tagged_union and raw_r == .tagged_union)
         return self.typeErr("ordered comparison between tagged unions is not defined", span.line, span.col);
+    if (raw_l == .function or raw_r == .function)
+        return self.typeErr("ordered comparison on functions is not defined", span.line, span.col);
+    if (raw_l == .union_val or raw_r == .union_val)
+        return self.typeErr("ordered comparison on untagged unions is not defined", span.line, span.col);
 
     const adopted = h.adoptNumericTypes(raw_l.unwrapTransparent(), raw_r.unwrapTransparent());
     const l = adopted[0];
