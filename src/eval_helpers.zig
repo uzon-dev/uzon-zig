@@ -215,6 +215,30 @@ pub fn sameCategory(a: Value, b: Value) bool {
     return std.meta.activeTag(a) == std.meta.activeTag(b);
 }
 
+/// Check if two untagged unions have the same type (v0.8 §5.2).
+/// Named unions: nominal identity (type_name must match).
+/// Anonymous unions: structural identity (member type set equality, order-insensitive).
+pub fn unionTypesMatch(a: val.Union, b: val.Union) bool {
+    // Both named → nominal
+    if (a.type_name != null and b.type_name != null)
+        return std.mem.eql(u8, a.type_name.?, b.type_name.?);
+    // One named, one not → different
+    if (a.type_name != null or b.type_name != null) return false;
+    // Both anonymous → structural (set equality)
+    if (a.types.len != b.types.len) return false;
+    for (a.types) |at| {
+        var found = false;
+        for (b.types) |bt| {
+            if (std.mem.eql(u8, at, bt)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
 /// Runtime equality (IEEE 754: NaN != NaN). Used by `is`/`is not`.
 pub fn runtimeEqual(a: Value, b: Value) bool {
     if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;

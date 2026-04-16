@@ -294,6 +294,20 @@ fn evalEquality(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *co
     }
     if (left == .tagged_union or right == .tagged_union)
         return self.typeErr("cannot compare tagged union with non-tagged-union value", span.line, span.col);
+    // Untagged union comparison (v0.8 §5.2)
+    if (left == .union_val and right == .union_val) {
+        // Different union types → type error; same type + different runtime type → false
+        if (!h.unionTypesMatch(left.union_val, right.union_val))
+            return self.typeErr("cannot compare untagged unions of different types", span.line, span.col);
+        if (!h.sameCategory(left.union_val.value.*, right.union_val.value.*)) {
+            return Value.boolean(op == .neq);
+        }
+        const eq = h.runtimeEqual(left.union_val.value.*, right.union_val.value.*);
+        return Value.boolean(if (op == .eq) eq else !eq);
+    }
+    if (left == .union_val or right == .union_val) {
+        // Union vs non-union — transparent comparison
+    }
 
     const adopted = h.adoptNumericTypes(left.unwrapUntagged(), right.unwrapUntagged());
     const l = adopted[0];
