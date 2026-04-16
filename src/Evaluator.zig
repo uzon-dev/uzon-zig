@@ -104,13 +104,23 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
 
     if (parent_scope) |ps| scope.parent = ps;
 
-    const order = deps.topologicalSort(self.allocator, bindings, scope) catch |e| switch (e) {
-        error.UzonCircular => return self.circErr("circular dependency detected", bindings[0].span.line, bindings[0].span.col),
+    var cycle_idx: usize = 0;
+    const order = deps.topologicalSort(self.allocator, bindings, scope, &cycle_idx) catch |e| switch (e) {
+        error.UzonCircular => return self.circErr("circular dependency detected", bindings[cycle_idx].span.line, bindings[cycle_idx].span.col),
         error.OutOfMemory => return error.OutOfMemory,
     };
 
-    deps.checkFunctionCallDag(self.allocator, bindings) catch |e| switch (e) {
-        error.UzonCircular => return self.typeErr("recursive function call detected", bindings[0].span.line, bindings[0].span.col),
+    var cycle_name: ?[]const u8 = null;
+    deps.checkFunctionCallDag(self.allocator, bindings, &cycle_name) catch |e| switch (e) {
+        error.UzonCircular => {
+            if (cycle_name) |name| {
+                for (bindings) |b| {
+                    if (std.mem.eql(u8, b.name, name))
+                        return self.typeErr("recursive function call detected", b.span.line, b.span.col);
+                }
+            }
+            return self.typeErr("recursive function call detected", bindings[0].span.line, bindings[0].span.col);
+        },
         error.OutOfMemory => return error.OutOfMemory,
     };
 

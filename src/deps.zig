@@ -5,10 +5,12 @@ const Scope = @import("Scope.zig");
 /// Compute topological evaluation order for bindings (Kahn's algorithm).
 /// Returns indices into `bindings` in evaluation order.
 /// Returns error.UzonCircular if a cycle is detected (§11.2).
+/// On cycle, `cycle_idx` is set to the index of a binding participating in the cycle.
 pub fn topologicalSort(
     allocator: std.mem.Allocator,
     bindings: []const Ast.Binding,
     scope: *const Scope,
+    cycle_idx: *usize,
 ) ![]usize {
     const n = bindings.len;
     if (n == 0) return &.{};
@@ -57,14 +59,26 @@ pub fn topologicalSort(
         }
     }
 
-    if (result.items.len != n) return error.UzonCircular;
+    if (result.items.len != n) {
+        // Find first binding still in the cycle (in_degree > 0)
+        for (0..n) |i| {
+            if (in_degree[i] > 0) {
+                cycle_idx.* = i;
+                return error.UzonCircular;
+            }
+        }
+        cycle_idx.* = 0;
+        return error.UzonCircular;
+    }
     return result.items;
 }
 
 /// Check that the function call graph is a DAG (no recursion, §3.8).
+/// On cycle, `cycle_name` is set to the name of a function in the cycle.
 pub fn checkFunctionCallDag(
     allocator: std.mem.Allocator,
     bindings: []const Ast.Binding,
+    cycle_name: *?[]const u8,
 ) !void {
     var func_names = std.StringHashMapUnmanaged(void){};
     for (bindings) |b| {
@@ -89,7 +103,10 @@ pub fn checkFunctionCallDag(
     it = func_names.keyIterator();
     while (it.next()) |name| {
         if ((color.get(name.*) orelse 0) == 0) {
-            if (dfsCycle(name.*, &graph, &color, allocator)) return error.UzonCircular;
+            if (dfsCycle(name.*, &graph, &color, allocator)) {
+                cycle_name.* = name.*;
+                return error.UzonCircular;
+            }
         }
     }
 }
