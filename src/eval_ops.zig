@@ -462,12 +462,30 @@ fn evalInOperator(self: *Evaluator, ln: *const Ast.Node, rn: *const Ast.Node, sc
                 }
             }
             for (l.elements) |e| {
+                if (e.isUndefined()) continue;
                 if (h.runtimeEqual(needle, e)) break :blk Value.boolean(true);
             }
             break :blk Value.boolean(false);
         },
-        .tuple => self.typeErr("'in' operator only applies to lists, not tuples", span.line, span.col),
-        else => self.typeErr("'in' operator only applies to lists", span.line, span.col),
+        .tuple => |t| blk: {
+            // Tuple: heterogeneous — type mismatch elements are skipped, no error
+            for (t.elements) |e| {
+                if (e.isUndefined()) continue;
+                if (!h.sameCategory(needle, e)) continue;
+                if (h.runtimeEqual(needle, e)) break :blk Value.boolean(true);
+            }
+            break :blk Value.boolean(false);
+        },
+        .struct_val => |s| blk: {
+            // Struct: value membership (not key)
+            for (s.values) |v| {
+                if (v.isUndefined()) continue;
+                if (!h.sameCategory(needle, v)) continue;
+                if (h.runtimeEqual(needle, v)) break :blk Value.boolean(true);
+            }
+            break :blk Value.boolean(false);
+        },
+        else => self.typeErr("'in' operator requires list, tuple, or struct", span.line, span.col),
     };
 }
 
