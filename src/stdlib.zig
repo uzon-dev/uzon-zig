@@ -22,7 +22,7 @@ pub fn evalStdlibCall(self: *Evaluator, func_name: []const u8, arg_nodes: []cons
     if (std.mem.eql(u8, func_name, "len")) return stdLen(self, args, span);
     if (std.mem.eql(u8, func_name, "length")) return stdLen(self, args, span); // alias
     if (std.mem.eql(u8, func_name, "get")) return stdGet(self, args, span);
-    if (std.mem.eql(u8, func_name, "has")) return stdHas(self, args, span);
+    if (std.mem.eql(u8, func_name, "hasKey")) return stdHasKey(self, args, span);
     if (std.mem.eql(u8, func_name, "keys")) return stdKeys(self, args, span);
     if (std.mem.eql(u8, func_name, "values")) return stdValues(self, args, span);
     if (std.mem.eql(u8, func_name, "join")) return stdJoin(self, args, span);
@@ -102,26 +102,20 @@ fn stdGet(self: *Evaluator, args: []const Value, span: Ast.Span) EvalError!Value
     };
 }
 
-fn stdHas(self: *Evaluator, args: []const Value, span: Ast.Span) EvalError!Value {
+fn stdHasKey(self: *Evaluator, args: []const Value, span: Ast.Span) EvalError!Value {
     try expectArgs(self, args, 2, span);
-    return switch (args[0]) {
-        .list => |l| blk: {
-            for (l.elements) |e| {
-                if (h_.runtimeEqual(args[1], e)) break :blk Value.boolean(true);
-            }
-            break :blk Value.boolean(false);
-        },
-        .struct_val => |s| switch (args[1]) {
-            .string => |key| blk: {
-                for (s.keys) |k| {
-                    if (std.mem.eql(u8, key, k)) break :blk Value.boolean(true);
-                }
-                break :blk Value.boolean(false);
-            },
-            else => self.typeErr("struct key must be string", span.line, span.col),
-        },
-        else => self.typeErr("std.has requires list or struct", span.line, span.col),
+    const s = switch (args[0]) {
+        .struct_val => |sv| sv,
+        else => return self.typeErr("std.hasKey requires struct as first argument", span.line, span.col),
     };
+    const key = switch (args[1]) {
+        .string => |k| k,
+        else => return self.typeErr("std.hasKey key must be string", span.line, span.col),
+    };
+    for (s.keys) |k| {
+        if (std.mem.eql(u8, key, k)) return Value.boolean(true);
+    }
+    return Value.boolean(false);
 }
 
 fn stdKeys(self: *Evaluator, args: []const Value, span: Ast.Span) EvalError!Value {
