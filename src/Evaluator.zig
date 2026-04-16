@@ -16,6 +16,7 @@ const Evaluator = @This();
 
 allocator: std.mem.Allocator,
 last_error: ?UzonError,
+collected_errors: std.ArrayListUnmanaged(UzonError) = .{},
 call_stack: std.ArrayListUnmanaged(*const Ast.Node),
 base_dir: ?[]const u8 = null,
 import_cache: std.StringArrayHashMapUnmanaged(Value) = .{},
@@ -104,38 +105,93 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
 
     if (parent_scope) |ps| scope.parent = ps;
 
-    var cycle_idx: usize = 0;
-    const order = deps.topologicalSort(self.allocator, bindings, scope, &cycle_idx) catch |e| switch (e) {
-        error.UzonCircular => return self.circErr("circular dependency detected", bindings[cycle_idx].span.line, bindings[cycle_idx].span.col),
-        error.OutOfMemory => return error.OutOfMemory,
-    };
+    // Pre-evaluation static checks: collect ALL cycle errors, then continue
+    // evaluating non-cycle bindings so struct import cycles are also discovered.
 
-    var cycle_name: ?[]const u8 = null;
-    deps.checkFunctionCallDag(self.allocator, bindings, &cycle_name) catch |e| switch (e) {
-        error.UzonCircular => {
-            if (cycle_name) |name| {
-                for (bindings) |b| {
-                    if (std.mem.eql(u8, b.name, name))
-                        return self.typeErr("recursive function call detected", b.span.line, b.span.col);
-                }
-            }
-            return self.typeErr("recursive function call detected", bindings[0].span.line, bindings[0].span.col);
-        },
-        error.OutOfMemory => return error.OutOfMemory,
-    };
+    var cycle_indices = std.ArrayListUnmanaged(usize){};
+    const order = try deps.topologicalSort(self.allocator, bindings, scope, &cycle_indices);
 
+    var cycle_calls = std.ArrayListUnmanaged(deps.RecursiveCall){};
+    try deps.checkFunctionCallDag(self.allocator, bindings, &cycle_calls);
+
+    var fn_cycle_set = std.StringHashMapUnmanaged(void){};
+    for (cycle_calls.items) |rc| {
+        fn_cycle_set.put(self.allocator, rc.name, {}) catch {};
+        self.collected_errors.append(self.allocator, UzonError.typeError(
+            self.allocator,
+            "recursive function call detected",
+            rc.call_span.line,
+            rc.call_span.col,
+        )) catch {};
+    }
+
+    // Report data-cycle errors, skipping bindings already reported as recursive functions
+    for (cycle_indices.items) |idx| {
+        if (!fn_cycle_set.contains(bindings[idx].name)) {
+            self.collected_errors.append(self.allocator, UzonError.circularError(
+                self.allocator,
+                "circular dependency detected",
+                bindings[idx].span.line,
+                bindings[idx].span.col,
+            )) catch {};
+        }
+    }
+
+    // Evaluate non-cycle bindings using partial topological order.
+    // All errors are collected so that multiple problems are reported at once.
+    var had_errors = cycle_indices.items.len > 0 or fn_cycle_set.count() > 0;
     for (order) |idx| {
         const binding = bindings[idx];
-        if (binding.value.kind == .undefined_literal)
-            return self.typeErr("undefined cannot be used as a literal value", binding.span.line, binding.span.col);
-        if (binding.value.kind == .env_ref)
-            return self.typeErr("standalone env is not a value; use env.VARIABLE_NAME", binding.span.line, binding.span.col);
+        // Skip function-cycle participants (already reported above)
+        if (fn_cycle_set.contains(binding.name)) continue;
 
-        const value = try self.evalNode(binding.value, scope, binding.name);
+        if (binding.value.kind == .undefined_literal) {
+            self.collected_errors.append(self.allocator, UzonError.typeError(
+                self.allocator, "undefined cannot be used as a literal value", binding.span.line, binding.span.col,
+            )) catch {};
+            had_errors = true;
+            continue;
+        }
+        if (binding.value.kind == .env_ref) {
+            self.collected_errors.append(self.allocator, UzonError.typeError(
+                self.allocator, "standalone env is not a value; use env.VARIABLE_NAME", binding.span.line, binding.span.col,
+            )) catch {};
+            had_errors = true;
+            continue;
+        }
 
-        if (value == .list and value.list.elements.len == 0 and value.list.element_type == null)
-            if (binding.value.kind == .list_literal)
-                return self.typeErr("empty list requires a type annotation", binding.span.line, binding.span.col);
+        const pre_count = self.collected_errors.items.len;
+        const value = self.evalNode(binding.value, scope, binding.name) catch |e| switch (e) {
+            error.UzonCircular => {
+                // circErr (e.g. circular file import) sets last_error only.
+                // Promote it to collected_errors so it survives.
+                if (self.collected_errors.items.len == pre_count) {
+                    if (self.last_error) |le| self.collected_errors.append(self.allocator, le) catch {};
+                }
+                had_errors = true;
+                continue;
+            },
+            else => {
+                // If a previous binding already failed, this failure may be
+                // a secondary consequence (e.g. undefined value because the
+                // failed binding was never defined). Skip it.
+                if (had_errors) continue;
+                // Otherwise collect the error and continue evaluating.
+                if (self.last_error) |le| self.collected_errors.append(self.allocator, le) catch {};
+                had_errors = true;
+                continue;
+            },
+        };
+
+        if (value == .list and value.list.elements.len == 0 and value.list.element_type == null) {
+            if (binding.value.kind == .list_literal) {
+                self.collected_errors.append(self.allocator, UzonError.typeError(
+                    self.allocator, "empty list requires a type annotation", binding.span.line, binding.span.col,
+                )) catch {};
+                had_errors = true;
+                continue;
+            }
+        }
 
         if (binding.is_are) {
             const list_val: Value = switch (value) {
@@ -163,8 +219,13 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
 
         // Register named type via `called`
         if (binding.called) |type_name| {
-            if (scope.getType(type_name) != null)
-                return self.typeErr("duplicate type name", binding.span.line, binding.span.col);
+            if (scope.getType(type_name) != null) {
+                self.collected_errors.append(self.allocator, UzonError.typeError(
+                    self.allocator, "duplicate type name", binding.span.line, binding.span.col,
+                )) catch {};
+                had_errors = true;
+                continue;
+            }
             if (eval_types.buildTypeDef(self, type_name, value)) |td|
                 try scope.defineType(type_name, td);
 
@@ -180,6 +241,11 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
                 }
             }
         }
+    }
+
+    if (had_errors) {
+        self.last_error = if (self.collected_errors.items.len > 0) self.collected_errors.getLast() else null;
+        return error.UzonCircular;
     }
 
     // Post-pass: validate function parameter type names

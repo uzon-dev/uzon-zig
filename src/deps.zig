@@ -5,12 +5,12 @@ const Scope = @import("Scope.zig");
 /// Compute topological evaluation order for bindings (Kahn's algorithm).
 /// Returns indices into `bindings` in evaluation order.
 /// Returns error.UzonCircular if a cycle is detected (§11.2).
-/// On cycle, `cycle_idx` is set to the index of a binding participating in the cycle.
+/// On cycle, `cycle_indices` is populated with all binding indices participating in cycles.
 pub fn topologicalSort(
     allocator: std.mem.Allocator,
     bindings: []const Ast.Binding,
     scope: *const Scope,
-    cycle_idx: *usize,
+    cycle_indices: *std.ArrayListUnmanaged(usize),
 ) ![]usize {
     const n = bindings.len;
     if (n == 0) return &.{};
@@ -60,25 +60,25 @@ pub fn topologicalSort(
     }
 
     if (result.items.len != n) {
-        // Find first binding still in the cycle (in_degree > 0)
         for (0..n) |i| {
-            if (in_degree[i] > 0) {
-                cycle_idx.* = i;
-                return error.UzonCircular;
-            }
+            if (in_degree[i] > 0) try cycle_indices.append(allocator, i);
         }
-        cycle_idx.* = 0;
-        return error.UzonCircular;
     }
     return result.items;
 }
 
+/// A recursive function call: the calling function's name and the call site location.
+pub const RecursiveCall = struct {
+    name: []const u8,
+    call_span: Ast.Span,
+};
+
 /// Check that the function call graph is a DAG (no recursion, §3.8).
-/// On cycle, `cycle_name` is set to the name of a function in the cycle.
+/// On cycle, `cycle_calls` is populated with the call site of each recursive call.
 pub fn checkFunctionCallDag(
     allocator: std.mem.Allocator,
     bindings: []const Ast.Binding,
-    cycle_name: *?[]const u8,
+    cycle_calls: *std.ArrayListUnmanaged(RecursiveCall),
 ) !void {
     var func_names = std.StringHashMapUnmanaged(void){};
     for (bindings) |b| {
@@ -86,12 +86,16 @@ pub fn checkFunctionCallDag(
     }
     if (func_names.count() == 0) return;
 
+    // Build call graph with call site spans
     var graph = std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(void)){};
+    var call_spans = std.StringHashMapUnmanaged(std.StringHashMapUnmanaged(Ast.Span)){};
     for (bindings) |b| {
         if (b.value.kind == .function_expr) {
             var calls = std.StringHashMapUnmanaged(void){};
-            collectFunctionCalls(allocator, b.value, &func_names, &calls);
+            var spans = std.StringHashMapUnmanaged(Ast.Span){};
+            collectFunctionCalls(allocator, b.value, &func_names, &calls, &spans);
             try graph.put(allocator, b.name, calls);
+            try call_spans.put(allocator, b.name, spans);
         }
     }
 
@@ -104,8 +108,34 @@ pub fn checkFunctionCallDag(
     while (it.next()) |name| {
         if ((color.get(name.*) orelse 0) == 0) {
             if (dfsCycle(name.*, &graph, &color, allocator)) {
-                cycle_name.* = name.*;
-                return error.UzonCircular;
+                // First pass: collect all gray (cycle-participating) node names
+                var gray_nodes = std.ArrayListUnmanaged([]const u8){};
+                var color_it = color.iterator();
+                while (color_it.next()) |entry| {
+                    if (entry.value_ptr.* == 1) {
+                        gray_nodes.append(allocator, entry.key_ptr.*) catch {};
+                    }
+                }
+                // Build gray set for callee lookup
+                var gray_set = std.StringHashMapUnmanaged(void){};
+                for (gray_nodes.items) |gn| gray_set.put(allocator, gn, {}) catch {};
+                // Second pass: find call sites and mark black
+                for (gray_nodes.items) |caller| {
+                    if (call_spans.get(caller)) |spans_map| {
+                        if (graph.get(caller)) |callees| {
+                            var callee_it = callees.keyIterator();
+                            while (callee_it.next()) |callee| {
+                                if (gray_set.contains(callee.*)) {
+                                    if (spans_map.get(callee.*)) |span| {
+                                        try cycle_calls.append(allocator, .{ .name = caller, .call_span = span });
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    color.put(allocator, caller, 2) catch {};
+                }
             }
         }
     }
@@ -255,10 +285,11 @@ const FnCallCtx = struct {
     allocator: std.mem.Allocator,
     func_names: *const std.StringHashMapUnmanaged(void),
     calls: *std.StringHashMapUnmanaged(void),
+    spans: *std.StringHashMapUnmanaged(Ast.Span),
 };
 
-fn collectFunctionCalls(allocator: std.mem.Allocator, node: *const Ast.Node, func_names: *const std.StringHashMapUnmanaged(void), calls: *std.StringHashMapUnmanaged(void)) void {
-    const ctx = FnCallCtx{ .allocator = allocator, .func_names = func_names, .calls = calls };
+fn collectFunctionCalls(allocator: std.mem.Allocator, node: *const Ast.Node, func_names: *const std.StringHashMapUnmanaged(void), calls: *std.StringHashMapUnmanaged(void), spans: *std.StringHashMapUnmanaged(Ast.Span)) void {
+    const ctx = FnCallCtx{ .allocator = allocator, .func_names = func_names, .calls = calls, .spans = spans };
     fnCallVisitor(node, ctx);
 }
 
@@ -267,7 +298,10 @@ fn fnCallVisitor(node: *const Ast.Node, ctx: FnCallCtx) void {
         const fc = node.kind.function_call;
         if (fc.callee.kind == .identifier) {
             const name = fc.callee.kind.identifier.name;
-            if (ctx.func_names.contains(name)) ctx.calls.put(ctx.allocator, name, {}) catch {};
+            if (ctx.func_names.contains(name)) {
+                ctx.calls.put(ctx.allocator, name, {}) catch {};
+                ctx.spans.put(ctx.allocator, name, node.span) catch {};
+            }
         }
     }
     visitChildren(node, ctx, fnCallVisitor);
