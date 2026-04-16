@@ -927,11 +927,8 @@ fn parseNamedClause(self: *Parser, value: *const Ast.Node) Error!*const Ast.Node
     }
 
     if (self.at(.as)) {
-        const as_s = self.span();
-        _ = self.advance();
-        self.skipNewlines();
-        const annotated = try self.node(.{ .type_annotation = .{ .expr = value, .type_expr = try self.parseTypeExpr() } }, as_s);
-        return self.node(.{ .named_variant = .{ .value = annotated, .tag = tag, .variants = &.{} } }, s);
+        const as_tok = self.peek();
+        return self.failSug("'as Type' must precede 'named variant'", "write 'value as Type named variant' instead", as_tok.line, as_tok.col);
     }
 
     return self.node(.{ .named_variant = .{ .value = value, .tag = tag, .variants = &.{} } }, s);
