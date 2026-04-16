@@ -58,7 +58,7 @@ fn evalCaseValue(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses
     var matched_idx: ?usize = null;
     for (when_clauses, 0..) |wc, i| {
         if (wc.value.kind == .undefined_literal)
-            return self.rtErr("undefined cannot be used as a when value", span.line, span.col);
+            return self.typeErr("undefined cannot be used as a when value", span.line, span.col);
         // Enum variant resolution in when clauses
         const when_val = blk: {
             if (match_scrutinee == .enum_val and wc.value.kind == .identifier) {
