@@ -91,6 +91,8 @@ fn evalCaseType(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses:
 
     // Validate all when-clause types
     for (when_clauses) |wc| {
+        if (wc.value.kind == .undefined_literal)
+            return self.typeErr("undefined cannot be used as a when value", span.line, span.col);
         const tn = whenClauseTypeString(self.allocator, wc) orelse continue;
         if (scrutinee == .union_val) {
             var valid = false;
@@ -295,6 +297,8 @@ fn evalCaseNamed(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses
 
     var matched_idx: ?usize = null;
     for (when_clauses, 0..) |wc, i| {
+        if (wc.value.kind == .undefined_literal)
+            return self.typeErr("undefined cannot be used as a when value", span.line, span.col);
         const vn = if (wc.value.kind == .identifier) wc.value.kind.identifier.name else continue;
         if (!h.isValidVariantTag(tu.variants, vn))
             return self.typeErr("unknown variant name in 'case named'", span.line, span.col);
