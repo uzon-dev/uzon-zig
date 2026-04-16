@@ -610,7 +610,12 @@ fn scanQuotedIdentifier(self: *Lexer, line: u32, col: u32) !void {
         self.advance(); // skip closing '
     }
 
-    try self.emit(.quoted_identifier, content, line, col);
+    // §2.3: quoted identifiers whose content matches a keyword are that keyword
+    if (Token.keywords.get(content)) |kw_type| {
+        try self.emit(kw_type, content, line, col);
+    } else {
+        try self.emit(.quoted_identifier, content, line, col);
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
