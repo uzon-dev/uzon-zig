@@ -991,6 +991,15 @@ fn parseFunctionExpr(self: *Parser) Error!*const Ast.Node {
     }
     self.skipNewlines();
 
+    // Validate duplicate parameter names
+    for (params.items, 0..) |p, i| {
+        for (params.items[0..i]) |prev| {
+            if (std.mem.eql(u8, p.name, prev.name)) {
+                return self.fail("duplicate parameter name", p.span.line, p.span.col);
+            }
+        }
+    }
+
     // Validate default param ordering
     var seen_default = false;
     for (params.items) |p| {
