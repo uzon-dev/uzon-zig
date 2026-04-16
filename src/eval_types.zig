@@ -290,12 +290,11 @@ pub fn evalConversion(self: *Evaluator, expr_node: *const Ast.Node, type_expr: *
         else => return self.typeErr("complex type conversions not yet supported", span.line, span.col),
     };
 
-    if (value.isUndefined()) return .undefined;
-
     if (std.mem.eql(u8, type_name, "bool"))
         return if (value == .bool_val) value else self.typeErr("cannot convert to bool", span.line, span.col);
     if (std.mem.eql(u8, type_name, "null"))
         return if (value == .null_val) value else self.typeErr("cannot convert to null", span.line, span.col);
+    if (value.isUndefined()) return .undefined;
 
     if (h.parseIntegerTypeName(type_name)) |it| return convertToInteger(self, value, it, span);
     if (h.parseFloatTypeName(type_name)) |ft| return convertToFloat(self, value, ft, span);
