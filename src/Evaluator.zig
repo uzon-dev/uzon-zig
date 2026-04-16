@@ -229,6 +229,7 @@ pub fn evalNode(self: *Evaluator, node: *const Ast.Node, scope: *Scope, exclude:
         .function_expr => |fe| eval_exprs.evalFunctionExpr(self, fe.params, fe.return_type, fe.body_bindings, fe.body_expr, scope),
         .function_call => |fc| eval_exprs.evalFunctionCall(self, fc.callee, fc.args, scope, exclude, node.span),
         .struct_import => |si| eval_exprs.evalStructImport(self, si.path, node.span),
+        .type_pattern => .undefined, // only meaningful inside case type evaluation
     };
 }
 

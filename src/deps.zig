@@ -99,7 +99,7 @@ pub fn checkFunctionCallDag(
 /// Calls `visitor` on every child node of `node`, passing through `ctx`.
 fn visitChildren(node: *const Ast.Node, ctx: anytype, visitor: anytype) void {
     switch (node.kind) {
-        .identifier, .integer_literal, .float_literal, .bool_literal, .null_literal, .undefined_literal, .inf_literal, .nan_literal, .env_ref, .struct_import => {},
+        .identifier, .integer_literal, .float_literal, .bool_literal, .null_literal, .undefined_literal, .inf_literal, .nan_literal, .env_ref, .struct_import, .type_pattern => {},
         .binary_op => |bo| {
             visitor(bo.left, ctx);
             visitor(bo.right, ctx);

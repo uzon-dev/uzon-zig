@@ -155,6 +155,9 @@ pub const Node = struct {
         // Import & special
         struct_import: struct { path: []const u8 },
         field_extraction: struct { source: *const Node },
+
+        // Type pattern (for case type when clauses with compound types)
+        type_pattern: struct { type_expr: TypeExpr },
     };
 };
 

@@ -862,6 +862,11 @@ fn parseCaseExpr(self: *Parser) Error!*const Ast.Node {
                 break :blk try self.node(.{ .identifier = .{ .name = vn } }, ws);
             },
             .type_ => blk: {
+                // Support compound type expressions: [i32], (i32, string), etc.
+                if (self.at(.l_bracket) or self.at(.l_paren)) {
+                    const te = try self.parseTypeExpr();
+                    break :blk try self.node(.{ .type_pattern = .{ .type_expr = te } }, ws);
+                }
                 const t = self.advance();
                 break :blk try self.node(.{ .identifier = .{ .name = t.lexeme } }, .{ .line = t.line, .col = t.col });
             },

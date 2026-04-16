@@ -91,7 +91,7 @@ fn evalCaseType(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses:
 
     // Validate all when-clause types
     for (when_clauses) |wc| {
-        const tn = if (wc.value.kind == .identifier) wc.value.kind.identifier.name else continue;
+        const tn = whenClauseTypeString(self.allocator, wc) orelse continue;
         if (scrutinee == .union_val) {
             var valid = false;
             for (scrutinee.union_val.types) |t| if (std.mem.eql(u8, t, tn)) {
@@ -111,8 +111,8 @@ fn evalCaseType(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses:
 
     var matched_idx: ?usize = null;
     for (when_clauses, 0..) |wc, i| {
-        const tn = if (wc.value.kind == .identifier) wc.value.kind.identifier.name else continue;
         if (scrutinee == .tagged_union) {
+            const tn = whenClauseTypeName(wc) orelse continue;
             for (scrutinee.tagged_union.variants) |v| {
                 if (std.mem.eql(u8, v.name, scrutinee.tagged_union.tag))
                     if (v.type_name) |vtn| if (std.mem.eql(u8, vtn, tn)) {
@@ -120,7 +120,7 @@ fn evalCaseType(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses:
                     };
             }
             if (matched_idx != null) break;
-        } else if (h.valueMatchesType(check_val, tn)) {
+        } else if (valueMatchesWhenType(check_val, wc)) {
             matched_idx = i;
             break;
         }
@@ -128,12 +128,12 @@ fn evalCaseType(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses:
 
     // Evaluate with narrowed scopes
     if (matched_idx) |idx| {
-        const mt = if (when_clauses[idx].value.kind == .identifier) when_clauses[idx].value.kind.identifier.name else null;
+        const mt = whenClauseTypeName(when_clauses[idx]);
         var ns = makeNarrowedScope(self, scope, scrutinee_name, check_val, mt);
         const result = try self.evalNode(when_clauses[idx].result, &ns, exclude);
         for (when_clauses, 0..) |wc, i| {
             if (i != idx) {
-                const wt = if (wc.value.kind == .identifier) wc.value.kind.identifier.name else null;
+                const wt = whenClauseTypeName(wc);
                 var ws = makeNarrowedScope(self, scope, scrutinee_name, check_val, wt);
                 const other = self.evalNode(wc.result, &ws, exclude) catch |e| switch (e) {
                     error.UzonRuntime => continue,
@@ -153,7 +153,7 @@ fn evalCaseType(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses:
     } else {
         const result = try self.evalNode(else_node, scope, exclude);
         for (when_clauses) |wc| {
-            const wt = if (wc.value.kind == .identifier) wc.value.kind.identifier.name else null;
+            const wt = whenClauseTypeName(wc);
             var ws = makeNarrowedScope(self, scope, scrutinee_name, check_val, wt);
             const other = self.evalNode(wc.result, &ws, exclude) catch |e| switch (e) {
                 error.UzonRuntime => continue,
@@ -164,6 +164,123 @@ fn evalCaseType(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses:
         }
         return result;
     }
+}
+
+/// Extract simple type name from a when clause node (identifier or null for compound types).
+fn whenClauseTypeName(wc: Ast.WhenClause) ?[]const u8 {
+    return if (wc.value.kind == .identifier) wc.value.kind.identifier.name else null;
+}
+
+/// Get the type string for a when clause (simple name or serialized compound type).
+fn whenClauseTypeString(allocator: std.mem.Allocator, wc: Ast.WhenClause) ?[]const u8 {
+    if (wc.value.kind == .identifier) return wc.value.kind.identifier.name;
+    if (wc.value.kind == .type_pattern) return typeExprToString(allocator, wc.value.kind.type_pattern.type_expr) catch null;
+    return null;
+}
+
+/// Check if a value matches a when clause type (simple name or compound type pattern).
+fn valueMatchesWhenType(check_val: Value, wc: Ast.WhenClause) bool {
+    if (wc.value.kind == .identifier) return h.valueMatchesType(check_val, wc.value.kind.identifier.name);
+    if (wc.value.kind == .type_pattern) return valueMatchesTypeExpr(check_val, wc.value.kind.type_pattern.type_expr);
+    return false;
+}
+
+/// Adopt a value to match a compound type expression (recursive analog of h.adoptToType).
+fn adoptToTypeExpr(allocator: std.mem.Allocator, v: Value, te: Ast.TypeExpr) Value {
+    return switch (te.data) {
+        .name => |name| h.adoptToType(v, name),
+        .list => |inner| blk: {
+            if (v != .list) break :blk v;
+            const l = v.list;
+            const new_elements = allocator.alloc(Value, l.elements.len) catch break :blk v;
+            for (l.elements, 0..) |elem, i| {
+                new_elements[i] = adoptToTypeExpr(allocator, elem, inner.*);
+            }
+            break :blk Value{ .list = .{ .elements = new_elements, .element_type = l.element_type } };
+        },
+        .tuple => |types| blk: {
+            if (v != .tuple) break :blk v;
+            const t = v.tuple;
+            if (t.elements.len != types.len) break :blk v;
+            const new_elements = allocator.alloc(Value, t.elements.len) catch break :blk v;
+            for (t.elements, types, 0..) |elem, typ, i| {
+                new_elements[i] = adoptToTypeExpr(allocator, elem, typ);
+            }
+            break :blk Value{ .tuple = .{ .elements = new_elements } };
+        },
+        .null_type, .path => v,
+    };
+}
+
+/// Check if a value matches a compound type expression.
+fn valueMatchesTypeExpr(v: Value, te: Ast.TypeExpr) bool {
+    return switch (te.data) {
+        .name => |name| h.valueMatchesType(v, name),
+        .list => |inner| blk: {
+            if (v != .list) break :blk false;
+            const l = v.list;
+            if (l.elements.len == 0) {
+                // Empty list: check element_type annotation
+                if (l.element_type) |et| break :blk typeExprMatchesName(inner.*, et);
+                break :blk false;
+            }
+            // Check first non-null element matches inner type
+            for (l.elements) |e| {
+                if (e == .null_val) continue;
+                break :blk valueMatchesTypeExpr(e, inner.*);
+            }
+            break :blk false;
+        },
+        .tuple => |types| blk: {
+            if (v != .tuple) break :blk false;
+            const t = v.tuple;
+            if (t.elements.len != types.len) break :blk false;
+            for (t.elements, types) |elem, typ| {
+                if (!valueMatchesTypeExpr(elem, typ)) break :blk false;
+            }
+            break :blk true;
+        },
+        .null_type => v == .null_val,
+        .path => false,
+    };
+}
+
+fn typeExprMatchesName(te: Ast.TypeExpr, name: []const u8) bool {
+    return switch (te.data) {
+        .name => |n| std.mem.eql(u8, n, name),
+        else => false,
+    };
+}
+
+/// Serialize a TypeExpr to a canonical string for union type storage.
+fn typeExprToString(allocator: std.mem.Allocator, te: Ast.TypeExpr) ![]const u8 {
+    return switch (te.data) {
+        .name => |n| n,
+        .list => |inner| blk: {
+            const inner_str = try typeExprToString(allocator, inner.*);
+            break :blk try std.fmt.allocPrint(allocator, "[{s}]", .{inner_str});
+        },
+        .tuple => |types| blk: {
+            var buf = std.ArrayListUnmanaged(u8){};
+            try buf.append(allocator, '(');
+            for (types, 0..) |t, i| {
+                if (i > 0) try buf.appendSlice(allocator, ", ");
+                const ts = try typeExprToString(allocator, t);
+                try buf.appendSlice(allocator, ts);
+            }
+            try buf.append(allocator, ')');
+            break :blk buf.items;
+        },
+        .null_type => "null",
+        .path => |p| blk: {
+            var buf = std.ArrayListUnmanaged(u8){};
+            for (p, 0..) |seg, i| {
+                if (i > 0) try buf.append(allocator, '.');
+                try buf.appendSlice(allocator, seg);
+            }
+            break :blk buf.items;
+        },
+    };
 }
 
 fn evalCaseNamed(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses: []const Ast.WhenClause, else_node: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
@@ -309,18 +426,26 @@ pub fn evalFromUnion(self: *Evaluator, value_node: *const Ast.Node, types: []con
     if (types.len < 2) return self.typeErr("union must have at least 2 member types", value_node.span.line, value_node.span.col);
 
     const type_names = try self.allocator.alloc([]const u8, types.len);
-    for (types, 0..) |t, i| type_names[i] = if (t.data == .name) t.data.name else "unknown";
+    for (types, 0..) |t, i| type_names[i] = typeExprToString(self.allocator, t) catch "unknown";
     for (type_names, 0..) |tn, i| {
         for (type_names[0..i]) |prev| if (std.mem.eql(u8, tn, prev))
             return self.typeErr("duplicate union member type", value_node.span.line, value_node.span.col);
     }
 
     var adopted = value;
-    for (type_names) |tn| {
-        const candidate = h.adoptToType(value, tn);
-        if (h.valueMatchesType(candidate, tn)) {
-            adopted = candidate;
-            break;
+    for (types, type_names) |te, tn| {
+        if (te.data == .name) {
+            const candidate = h.adoptToType(value, tn);
+            if (h.valueMatchesType(candidate, tn)) {
+                adopted = candidate;
+                break;
+            }
+        } else {
+            const candidate = adoptToTypeExpr(self.allocator, value, te);
+            if (valueMatchesTypeExpr(candidate, te)) {
+                adopted = candidate;
+                break;
+            }
         }
     } else return self.typeErr("union value does not match any member type", value_node.span.line, value_node.span.col);
 
