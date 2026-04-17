@@ -11,6 +11,42 @@ const Token = @import("Token.zig");
 
 const EvalError = Evaluator.EvalError;
 
+// ── Eager binary operand evaluation ────────────────────���────
+// Evaluates both operands even if the left side fails, so that
+// errors from both sides are collected.
+
+/// Whether a node is a direct name reference (identifier, member access, env).
+/// Sub-expressions that evaluated to .undefined have already had their errors
+/// collected; this distinguishes them from genuinely unresolved names.
+pub fn isDirectReference(node: *const Ast.Node) bool {
+    return switch (node.kind) {
+        .identifier, .member_access, .env_ref => true,
+        .grouping => |g| isDirectReference(g.expr),
+        else => false,
+    };
+}
+
+/// Evaluate both sides of a binary operation. If either side errors,
+/// the error is collected and .undefined is returned in its place,
+/// so the other side still gets evaluated.
+fn evalBinaryOperands(self: *Evaluator, ln: *const Ast.Node, rn: *const Ast.Node, scope: *Scope, exclude: ?[]const u8) [2]Value {
+    var left: Value = .undefined;
+    if (self.evalNode(ln, scope, exclude)) |v| {
+        left = v;
+    } else |_| {
+        if (self.last_error) |le| self.collected_errors.append(self.allocator, le) catch {};
+        self.last_error = null;
+    }
+    var right: Value = .undefined;
+    if (self.evalNode(rn, scope, exclude)) |v| {
+        right = v;
+    } else |_| {
+        if (self.last_error) |le| self.collected_errors.append(self.allocator, le) catch {};
+        self.last_error = null;
+    }
+    return .{ left, right };
+}
+
 // ── Keyword suggestion helpers ──────────────────────────────
 
 fn keywordSuggestion(allocator: std.mem.Allocator, node: *const Ast.Node) ?[]const u8 {
@@ -21,22 +57,38 @@ fn keywordSuggestion(allocator: std.mem.Allocator, node: *const Ast.Node) ?[]con
     return null;
 }
 
-fn undefinedSuggestion(allocator: std.mem.Allocator, ln: *const Ast.Node, rn: *const Ast.Node, lv: Value, rv: Value) ?[]const u8 {
-    if (lv.isUndefined()) if (keywordSuggestion(allocator, ln)) |s| return s;
-    if (rv.isUndefined()) if (keywordSuggestion(allocator, rn)) |s| return s;
-    return null;
+/// Report undefined operand errors. Only reports for direct references;
+/// sub-expression .undefined values have already been collected by evalBinaryOperands.
+fn undefinedErr(self: *Evaluator, msg: []const u8, ln: *const Ast.Node, rn: *const Ast.Node, lv: Value, rv: Value, _: Ast.Span) EvalError {
+    const err_mod = @import("error.zig");
+    const l_report = lv.isUndefined() and isDirectReference(ln);
+    const r_report = rv.isUndefined() and isDirectReference(rn);
+
+    if (l_report and r_report) {
+        self.collected_errors.append(self.allocator, if (keywordSuggestion(self.allocator, ln)) |s|
+            err_mod.UzonError.initWithSuggestion(self.allocator, .runtime, msg, s, ln.span.line, ln.span.col)
+        else
+            err_mod.UzonError.init(self.allocator, .runtime, msg, ln.span.line, ln.span.col)) catch {};
+        if (keywordSuggestion(self.allocator, rn)) |s| return self.rtErrSugSpan(msg, s, rn.span);
+        return self.rtErrSpan(msg, rn.span);
+    }
+    if (l_report) {
+        if (keywordSuggestion(self.allocator, ln)) |s| return self.rtErrSugSpan(msg, s, ln.span);
+        return self.rtErrSpan(msg, ln.span);
+    }
+    if (r_report) {
+        if (keywordSuggestion(self.allocator, rn)) |s| return self.rtErrSugSpan(msg, s, rn.span);
+        return self.rtErrSpan(msg, rn.span);
+    }
+    // Both undefined from sub-expression errors — already collected, just propagate.
+    self.last_error = null;
+    return error.UzonRuntime;
 }
 
-fn undefinedErr(self: *Evaluator, msg: []const u8, ln: *const Ast.Node, rn: *const Ast.Node, lv: Value, rv: Value, span: Ast.Span) EvalError {
-    if (undefinedSuggestion(self.allocator, ln, rn, lv, rv)) |sug|
-        return self.rtErrSug(msg, sug, span.line, span.col);
-    return self.rtErr(msg, span.line, span.col);
-}
-
-fn undefinedErrSingle(self: *Evaluator, msg: []const u8, node: *const Ast.Node, span: Ast.Span) EvalError {
+fn undefinedErrSingle(self: *Evaluator, msg: []const u8, node: *const Ast.Node, _: Ast.Span) EvalError {
     if (keywordSuggestion(self.allocator, node)) |sug|
-        return self.rtErrSug(msg, sug, span.line, span.col);
-    return self.rtErr(msg, span.line, span.col);
+        return self.rtErrSugSpan(msg, sug, node.span);
+    return self.rtErrSpan(msg, node.span);
 }
 
 // ── Binary operations ────────────────────────────────────────
@@ -56,8 +108,9 @@ pub fn evalBinaryOp(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn:
 }
 
 fn evalArithmetic(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
-    const raw_l = try self.evalNode(ln, scope, exclude);
-    const raw_r = try self.evalNode(rn, scope, exclude);
+    const ops = evalBinaryOperands(self, ln, rn, scope, exclude);
+    const raw_l = ops[0];
+    const raw_r = ops[1];
     if (raw_l.isUndefined() or raw_r.isUndefined())
         return undefinedErr(self, "undefined value in arithmetic operation", ln, rn, raw_l, raw_r, span);
 
@@ -68,34 +121,34 @@ fn evalArithmetic(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *
     return switch (l) {
         .integer => |li| switch (r) {
             .integer => |ri| intArithmetic(self, op, li, ri, span),
-            else => self.typeErr("arithmetic requires same numeric types", span.line, span.col),
+            else => self.typeErrSpan("arithmetic requires same numeric types", span),
         },
         .float_val => |lf| switch (r) {
             .float_val => |rf| floatArithmetic(self, op, lf, rf, span),
-            else => self.typeErr("arithmetic requires same numeric types", span.line, span.col),
+            else => self.typeErrSpan("arithmetic requires same numeric types", span),
         },
-        else => self.typeErr("arithmetic requires numeric operands", span.line, span.col),
+        else => self.typeErrSpan("arithmetic requires numeric operands", span),
     };
 }
 
 fn intArithmetic(self: *Evaluator, op: Ast.BinaryOp, left: Integer, right: Integer, span: Ast.Span) EvalError!Value {
     if (left.explicit and right.explicit and !h.intTypesMatch(left.type_ann, right.type_ann))
-        return self.typeErr("integer type mismatch in arithmetic", span.line, span.col);
+        return self.typeErrSpan("integer type mismatch in arithmetic", span);
 
     const a = left.value;
     const b = right.value;
     const rt = h.adoptIntType(left, right);
 
     const result: i128 = switch (op) {
-        .add => std.math.add(i128, a, b) catch return self.rtErr("integer overflow", span.line, span.col),
-        .sub => std.math.sub(i128, a, b) catch return self.rtErr("integer overflow", span.line, span.col),
-        .mul => std.math.mul(i128, a, b) catch return self.rtErr("integer overflow", span.line, span.col),
+        .add => std.math.add(i128, a, b) catch return self.rtErrSpan("integer overflow", span),
+        .sub => std.math.sub(i128, a, b) catch return self.rtErrSpan("integer overflow", span),
+        .mul => std.math.mul(i128, a, b) catch return self.rtErrSpan("integer overflow", span),
         .div => blk: {
-            if (b == 0) return self.rtErr("division by zero", span.line, span.col);
+            if (b == 0) return self.rtErrSpan("division by zero", span);
             break :blk @divTrunc(a, b);
         },
         .mod_ => blk: {
-            if (b == 0) return self.rtErr("modulo by zero", span.line, span.col);
+            if (b == 0) return self.rtErrSpan("modulo by zero", span);
             break :blk @rem(a, b);
         },
         .pow => try intPow(self, a, b, span),
@@ -103,13 +156,13 @@ fn intArithmetic(self: *Evaluator, op: Ast.BinaryOp, left: Integer, right: Integ
     };
 
     if ((left.explicit or right.explicit) and !h.intFitsType(result, rt))
-        return self.rtErr("integer overflow for type", span.line, span.col);
+        return self.rtErrSpan("integer overflow for type", span);
 
     return Value{ .integer = .{ .value = result, .type_ann = rt, .explicit = left.explicit or right.explicit } };
 }
 
 fn intPow(self: *Evaluator, base: i128, exp: i128, span: Ast.Span) EvalError!i128 {
-    if (exp < 0) return self.rtErr("negative exponent for integer exponentiation", span.line, span.col);
+    if (exp < 0) return self.rtErrSpan("negative exponent for integer exponentiation", span);
     if (exp == 0) return 1;
     if (base == 0) return 0;
     if (base == 1) return 1;
@@ -120,17 +173,17 @@ fn intPow(self: *Evaluator, base: i128, exp: i128, span: Ast.Span) EvalError!i12
     var e = exp;
     while (e > 0) {
         if (@rem(e, 2) == 1)
-            result = std.math.mul(i128, result, b) catch return self.rtErr("integer overflow in exponentiation", span.line, span.col);
+            result = std.math.mul(i128, result, b) catch return self.rtErrSpan("integer overflow in exponentiation", span);
         e = @divTrunc(e, 2);
         if (e > 0)
-            b = std.math.mul(i128, b, b) catch return self.rtErr("integer overflow in exponentiation", span.line, span.col);
+            b = std.math.mul(i128, b, b) catch return self.rtErrSpan("integer overflow in exponentiation", span);
     }
     return result;
 }
 
 fn floatArithmetic(self: *Evaluator, op: Ast.BinaryOp, left: Float, right: Float, span: Ast.Span) EvalError!Value {
     if (left.explicit and right.explicit and left.type_ann != right.type_ann)
-        return self.typeErr("float type mismatch in arithmetic", span.line, span.col);
+        return self.typeErrSpan("float type mismatch in arithmetic", span);
 
     const rt = h.adoptFloatType(left, right);
     const result: f64 = switch (op) {
@@ -146,8 +199,9 @@ fn floatArithmetic(self: *Evaluator, op: Ast.BinaryOp, left: Float, right: Float
 }
 
 fn evalRepeat(self: *Evaluator, ln: *const Ast.Node, rn: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
-    const raw_l = try self.evalNode(ln, scope, exclude);
-    const raw_r = try self.evalNode(rn, scope, exclude);
+    const ops = evalBinaryOperands(self, ln, rn, scope, exclude);
+    const raw_l = ops[0];
+    const raw_r = ops[1];
     if (raw_l.isUndefined() or raw_r.isUndefined())
         return undefinedErr(self, "undefined value in repetition", ln, rn, raw_l, raw_r, span);
 
@@ -156,10 +210,10 @@ fn evalRepeat(self: *Evaluator, ln: *const Ast.Node, rn: *const Ast.Node, scope:
 
     const count: usize = switch (right) {
         .integer => |ri| blk: {
-            if (ri.value < 0) return self.rtErr("repetition count must be non-negative", span.line, span.col);
+            if (ri.value < 0) return self.rtErrSpan("repetition count must be non-negative", span);
             break :blk @intCast(ri.value);
         },
-        else => return self.typeErr("repetition count must be integer", span.line, span.col),
+        else => return self.typeErrSpan("repetition count must be integer", span),
     };
 
     return switch (left) {
@@ -174,13 +228,14 @@ fn evalRepeat(self: *Evaluator, ln: *const Ast.Node, rn: *const Ast.Node, scope:
             for (0..count) |rep| @memcpy(elements[rep * l.elements.len .. (rep + 1) * l.elements.len], l.elements);
             break :blk Value{ .list = .{ .elements = elements, .element_type = l.element_type } };
         },
-        else => self.typeErr("repetition requires string or list", span.line, span.col),
+        else => self.typeErrSpan("repetition requires string or list", span),
     };
 }
 
 fn evalConcat(self: *Evaluator, ln: *const Ast.Node, rn: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
-    const raw_l = try self.evalNode(ln, scope, exclude);
-    const raw_r = try self.evalNode(rn, scope, exclude);
+    const ops = evalBinaryOperands(self, ln, rn, scope, exclude);
+    const raw_l = ops[0];
+    const raw_r = ops[1];
     if (raw_l.isUndefined() or raw_r.isUndefined())
         return undefinedErr(self, "undefined value in concatenation", ln, rn, raw_l, raw_r, span);
 
@@ -195,7 +250,7 @@ fn evalConcat(self: *Evaluator, ln: *const Ast.Node, rn: *const Ast.Node, scope:
                 buf.appendSlice(self.allocator, rs) catch return error.OutOfMemory;
                 break :blk Value.str(buf.items);
             },
-            else => self.typeErr("concatenation requires same types", span.line, span.col),
+            else => self.typeErrSpan("concatenation requires same types", span),
         },
         .list => |ll| switch (right) {
             .list => |rl| blk: {
@@ -204,30 +259,31 @@ fn evalConcat(self: *Evaluator, ln: *const Ast.Node, rn: *const Ast.Node, scope:
                     const r_first = firstNonNull(rl.elements);
                     if (l_first != null and r_first != null)
                         if (!h.branchTypesCompatible(l_first.?, r_first.?))
-                            return self.typeErr("list concatenation requires matching element types", span.line, span.col);
+                            return self.typeErrSpan("list concatenation requires matching element types", span);
                 }
                 const elements = try self.allocator.alloc(Value, ll.elements.len + rl.elements.len);
                 @memcpy(elements[0..ll.elements.len], ll.elements);
                 @memcpy(elements[ll.elements.len..], rl.elements);
                 break :blk Value{ .list = .{ .elements = elements, .element_type = ll.element_type } };
             },
-            else => self.typeErr("concatenation requires same types", span.line, span.col),
+            else => self.typeErrSpan("concatenation requires same types", span),
         },
-        else => self.typeErr("concatenation requires strings or lists", span.line, span.col),
+        else => self.typeErrSpan("concatenation requires strings or lists", span),
     };
 }
 
 fn evalRelational(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
-    const raw_l = try self.evalNode(ln, scope, exclude);
-    const raw_r = try self.evalNode(rn, scope, exclude);
+    const ops = evalBinaryOperands(self, ln, rn, scope, exclude);
+    const raw_l = ops[0];
+    const raw_r = ops[1];
     if (raw_l.isUndefined() or raw_r.isUndefined())
         return undefinedErr(self, "undefined value in comparison", ln, rn, raw_l, raw_r, span);
     if (raw_l == .tagged_union and raw_r == .tagged_union)
-        return self.typeErr("ordered comparison between tagged unions is not defined", span.line, span.col);
+        return self.typeErrSpan("ordered comparison between tagged unions is not defined", span);
     if (raw_l == .function or raw_r == .function)
-        return self.typeErr("ordered comparison on functions is not defined", span.line, span.col);
+        return self.typeErrSpan("ordered comparison on functions is not defined", span);
     if (raw_l == .union_val or raw_r == .union_val)
-        return self.typeErr("ordered comparison on untagged unions is not defined", span.line, span.col);
+        return self.typeErrSpan("ordered comparison on untagged unions is not defined", span);
 
     const adopted = h.adoptNumericTypes(raw_l.unwrapTransparent(), raw_r.unwrapTransparent());
     const l = adopted[0];
@@ -237,18 +293,18 @@ fn evalRelational(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *
         .integer => |li| switch (r) {
             .integer => |ri| blk: {
                 if (li.explicit and ri.explicit and !h.intTypesMatch(li.type_ann, ri.type_ann))
-                    return self.typeErr("integer type mismatch in comparison", span.line, span.col);
+                    return self.typeErrSpan("integer type mismatch in comparison", span);
                 break :blk cmp(i128, li.value, ri.value, op);
             },
-            else => return self.typeErr("relational comparison requires same types", span.line, span.col),
+            else => return self.typeErrSpan("relational comparison requires same types", span),
         },
         .float_val => |lf| switch (r) {
             .float_val => |rf| blk: {
                 if (lf.explicit and rf.explicit and lf.type_ann != rf.type_ann)
-                    return self.typeErr("float type mismatch in comparison", span.line, span.col);
+                    return self.typeErrSpan("float type mismatch in comparison", span);
                 break :blk cmp(f64, lf.value, rf.value, op);
             },
-            else => return self.typeErr("relational comparison requires same types", span.line, span.col),
+            else => return self.typeErrSpan("relational comparison requires same types", span),
         },
         .string => |ls| switch (r) {
             .string => |rs| blk: {
@@ -261,9 +317,9 @@ fn evalRelational(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *
                     else => unreachable,
                 };
             },
-            else => return self.typeErr("relational comparison requires same types", span.line, span.col),
+            else => return self.typeErrSpan("relational comparison requires same types", span),
         },
-        else => return self.typeErr("relational comparison not supported for this type", span.line, span.col),
+        else => return self.typeErrSpan("relational comparison not supported for this type", span),
     };
     return Value.boolean(result);
 }
@@ -279,26 +335,27 @@ fn cmp(comptime T: type, a: T, b: T, op: Ast.BinaryOp) bool {
 }
 
 fn evalEquality(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
-    const left = try self.evalNode(ln, scope, exclude);
-    const right = try self.evalNode(rn, scope, exclude);
+    const ops = evalBinaryOperands(self, ln, rn, scope, exclude);
+    const left = ops[0];
+    const right = ops[1];
 
     if (left.isNull() or left.isUndefined() or right.isNull() or right.isUndefined()) {
         const eq = h.runtimeEqual(left, right);
         return Value.boolean(if (op == .eq) eq else !eq);
     }
     if (left == .function or right == .function)
-        return self.typeErr("cannot compare functions", span.line, span.col);
+        return self.typeErrSpan("cannot compare functions", span);
     if (left == .tagged_union and right == .tagged_union) {
         const eq = h.runtimeEqual(left, right);
         return Value.boolean(if (op == .eq) eq else !eq);
     }
     if (left == .tagged_union or right == .tagged_union)
-        return self.typeErr("cannot compare tagged union with non-tagged-union value", span.line, span.col);
+        return self.typeErrSpan("cannot compare tagged union with non-tagged-union value", span);
     // Untagged union comparison (v0.8 §5.2)
     if (left == .union_val and right == .union_val) {
         // Different union types → type error; same type + different runtime type → false
         if (!h.unionTypesMatch(left.union_val, right.union_val))
-            return self.typeErr("cannot compare untagged unions of different types", span.line, span.col);
+            return self.typeErrSpan("cannot compare untagged unions of different types", span);
         if (!h.sameCategory(left.union_val.value.*, right.union_val.value.*)) {
             return Value.boolean(op == .neq);
         }
@@ -314,31 +371,31 @@ fn evalEquality(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *co
     const r = adopted[1];
 
     if (!h.sameCategory(l, r))
-        return self.typeErr("equality comparison requires same types", span.line, span.col);
+        return self.typeErrSpan("equality comparison requires same types", span);
 
     // Struct shape check
     if (l == .struct_val and r == .struct_val) {
         if (l.struct_val.keys.len != r.struct_val.keys.len)
-            return self.typeErr("cannot compare structs with different shapes", span.line, span.col);
+            return self.typeErrSpan("cannot compare structs with different shapes", span);
         for (l.struct_val.keys, l.struct_val.values) |k, lv| {
             var found = false;
             for (r.struct_val.keys, r.struct_val.values) |rk, rv| {
                 if (std.mem.eql(u8, k, rk)) {
                     found = true;
                     if (!lv.isNull() and !rv.isNull() and !h.sameCategory(lv, rv))
-                        return self.typeErr("cannot compare structs with different field types", span.line, span.col);
+                        return self.typeErrSpan("cannot compare structs with different field types", span);
                     break;
                 }
             }
-            if (!found) return self.typeErr("cannot compare structs with different shapes", span.line, span.col);
+            if (!found) return self.typeErrSpan("cannot compare structs with different shapes", span);
         }
     }
     if (l == .tuple and r == .tuple) {
         if (l.tuple.elements.len != r.tuple.elements.len)
-            return self.typeErr("cannot compare tuples of different length", span.line, span.col);
+            return self.typeErrSpan("cannot compare tuples of different length", span);
         for (l.tuple.elements, r.tuple.elements) |le, re| {
             if (!le.isNull() and !re.isNull() and !h.sameCategory(le, re))
-                return self.typeErr("cannot compare tuples with different element types", span.line, span.col);
+                return self.typeErrSpan("cannot compare tuples with different element types", span);
         }
     }
     if (l == .list and r == .list) {
@@ -346,7 +403,7 @@ fn evalEquality(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *co
             const lf = firstNonNull(l.list.elements);
             const rf = firstNonNull(r.list.elements);
             if (lf != null and rf != null and !h.sameCategory(lf.?, rf.?))
-                return self.typeErr("cannot compare lists with different element types", span.line, span.col);
+                return self.typeErrSpan("cannot compare lists with different element types", span);
         }
     }
 
@@ -372,10 +429,10 @@ fn evalLogical(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *con
             if (right.isUndefined()) return undefinedErrSingle(self, "undefined value in logical operation", rn, span);
             return switch (right) {
                 .bool_val => |rv| Value.boolean(rv),
-                else => self.typeErr("logical operators require bool operands", span.line, span.col),
+                else => self.typeErrSpan("logical operators require bool operands", span),
             };
         },
-        else => return self.typeErr("logical operators require bool operands", span.line, span.col),
+        else => return self.typeErrSpan("logical operators require bool operands", span),
     }
 }
 
@@ -389,7 +446,7 @@ pub fn evalOrElse(self: *Evaluator, ln: *const Ast.Node, rn: *const Ast.Node, sc
         else => return e,
     };
     if (!left.isNull() and !right.isNull() and !h.branchTypesCompatible(left, right))
-        return self.typeErr("'or else' operands must be the same type", span.line, span.col);
+        return self.typeErrSpan("'or else' operands must be the same type", span);
     return left;
 }
 
@@ -403,19 +460,19 @@ pub fn evalUnaryOp(self: *Evaluator, op: Ast.UnaryOp, node: *const Ast.Node, sco
             if (operand.isUndefined()) return undefinedErrSingle(self, "cannot negate undefined", node, span);
             return switch (operand) {
                 .integer => |i| Value{ .integer = .{
-                    .value = std.math.negate(i.value) catch return self.rtErr("integer overflow in negation", span.line, span.col),
+                    .value = std.math.negate(i.value) catch return self.rtErrSpan("integer overflow in negation", span),
                     .type_ann = i.type_ann,
                     .explicit = i.explicit,
                 } },
                 .float_val => |f| Value{ .float_val = .{ .value = -f.value, .type_ann = f.type_ann, .explicit = f.explicit } },
-                else => self.typeErr("negation requires numeric operand", span.line, span.col),
+                else => self.typeErrSpan("negation requires numeric operand", span),
             };
         },
         .not => {
             if (operand.isUndefined()) return undefinedErrSingle(self, "undefined value in 'not' operation", node, span);
             return switch (operand) {
                 .bool_val => |bv| Value.boolean(!bv),
-                else => self.typeErr("'not' requires bool operand", span.line, span.col),
+                else => self.typeErrSpan("'not' requires bool operand", span),
             };
         },
     }
@@ -425,10 +482,10 @@ pub fn evalUnaryOp(self: *Evaluator, op: Ast.UnaryOp, node: *const Ast.Node, sco
 
 fn evalIsType(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
     const value = try self.evalNode(ln, scope, exclude);
-    if (value.isUndefined()) return self.rtErr("undefined value in 'is type' check", span.line, span.col);
+    if (value.isUndefined()) return self.rtErrSpan("undefined value in 'is type' check", ln.span);
     const type_name = switch (rn.kind) {
         .identifier => |id| id.name,
-        else => return self.typeErr("'is type' requires type name", span.line, span.col),
+        else => return self.typeErrSpan("'is type' requires type name", span),
     };
     const matches = h.valueMatchesType(value.unwrapTransparent(), type_name);
     return Value.boolean(if (op == .is_type) matches else !matches);
@@ -436,26 +493,27 @@ fn evalIsType(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *cons
 
 fn evalIsNamed(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
     const value = try self.evalNode(ln, scope, exclude);
-    if (value.isUndefined()) return self.rtErr("undefined value in 'is named' check", span.line, span.col);
+    if (value.isUndefined()) return self.rtErrSpan("undefined value in 'is named' check", ln.span);
     const tu = switch (value) {
         .tagged_union => |t| t,
-        else => return self.typeErr("'is named' requires tagged union", span.line, span.col),
+        else => return self.typeErrSpan("'is named' requires tagged union", span),
     };
     const variant_name = switch (rn.kind) {
         .identifier => |id| id.name,
-        else => return self.typeErr("'is named' requires variant name", span.line, span.col),
+        else => return self.typeErrSpan("'is named' requires variant name", span),
     };
     if (!h.isValidVariantTag(tu.variants, variant_name))
-        return self.typeErr("unknown variant name in 'is named'", span.line, span.col);
+        return self.typeErrSpan("unknown variant name in 'is named'", span);
     const matches = std.mem.eql(u8, tu.tag, variant_name);
     return Value.boolean(if (op == .is_named) matches else !matches);
 }
 
 fn evalInOperator(self: *Evaluator, ln: *const Ast.Node, rn: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
-    const raw_needle = try self.evalNode(ln, scope, exclude);
-    const raw_haystack = try self.evalNode(rn, scope, exclude);
+    const ops = evalBinaryOperands(self, ln, rn, scope, exclude);
+    const raw_needle = ops[0];
+    const raw_haystack = ops[1];
     if (raw_needle.isUndefined() or raw_haystack.isUndefined())
-        return self.rtErr("undefined value in 'in' operation", span.line, span.col);
+        return undefinedErr(self, "undefined value in 'in' operation", ln, rn, raw_needle, raw_haystack, span);
 
     const needle = raw_needle.unwrapTransparent();
     const haystack = raw_haystack.unwrapTransparent();
@@ -465,17 +523,17 @@ fn evalInOperator(self: *Evaluator, ln: *const Ast.Node, rn: *const Ast.Node, sc
             if (l.elements.len > 0 and !needle.isNull()) {
                 if (firstNonNull(l.elements)) |fnn| {
                     if (!h.sameCategory(needle, fnn))
-                        return self.typeErr("'in' value and list element types must match", span.line, span.col);
+                        return self.typeErrSpan("'in' value and list element types must match", span);
                     if (needle == .integer and fnn == .integer)
                         if (needle.integer.explicit or fnn.integer.explicit)
                             if (!h.intTypesMatch(needle.integer.type_ann, fnn.integer.type_ann))
-                                return self.typeErr("'in' integer type mismatch", span.line, span.col);
+                                return self.typeErrSpan("'in' integer type mismatch", span);
                     if (needle == .enum_val and fnn == .enum_val) {
                         const n_tn = needle.enum_val.type_name;
                         const e_tn = fnn.enum_val.type_name;
                         if (n_tn != null and e_tn != null)
                             if (!std.mem.eql(u8, n_tn.?, e_tn.?))
-                                return self.typeErr("'in' enum type mismatch", span.line, span.col);
+                                return self.typeErrSpan("'in' enum type mismatch", span);
                     }
                 }
             }
@@ -503,7 +561,7 @@ fn evalInOperator(self: *Evaluator, ln: *const Ast.Node, rn: *const Ast.Node, sc
             }
             break :blk Value.boolean(false);
         },
-        else => self.typeErr("'in' operator requires list, tuple, or struct", span.line, span.col),
+        else => self.typeErrSpan("'in' operator requires list, tuple, or struct", span),
     };
 }
 

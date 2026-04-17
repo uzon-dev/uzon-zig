@@ -23,7 +23,7 @@ pub fn evalIfExpr(self: *Evaluator, cond_node: *const Ast.Node, then_node: *cons
                     else => return e,
                 };
                 if (!h.branchTypesCompatible(result, else_val))
-                    return self.typeErr("if/else branches have incompatible types", span.line, span.col);
+                    return self.typeErrSpan("if/else branches have incompatible types", span);
                 return result;
             } else {
                 const then_val = self.evalNode(then_node, scope, exclude) catch |e| switch (e) {
@@ -32,7 +32,7 @@ pub fn evalIfExpr(self: *Evaluator, cond_node: *const Ast.Node, then_node: *cons
                 };
                 const result = try self.evalNode(else_node, scope, exclude);
                 if (!h.branchTypesCompatible(then_val, result))
-                    return self.typeErr("if/else branches have incompatible types", span.line, span.col);
+                    return self.typeErrSpan("if/else branches have incompatible types", span);
                 return result;
             }
         },
@@ -50,15 +50,15 @@ pub fn evalCaseExpr(self: *Evaluator, mode: Ast.CaseMode, scrutinee_node: *const
 
 fn evalCaseValue(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses: []const Ast.WhenClause, else_node: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
     const scrutinee = try self.evalNode(scrutinee_node, scope, exclude);
-    if (scrutinee.isUndefined()) return self.rtErr("case scrutinee is undefined", span.line, span.col);
-    if (scrutinee == .union_val) return self.typeErr("case value cannot be used with untagged unions; use case type", span.line, span.col);
+    if (scrutinee.isUndefined()) return self.rtErrSpan("case scrutinee is undefined", scrutinee_node.span);
+    if (scrutinee == .union_val) return self.typeErrSpan("case value cannot be used with untagged unions; use case type", span);
 
     const match_scrutinee = scrutinee.unwrapTransparent();
 
     var matched_idx: ?usize = null;
     for (when_clauses, 0..) |wc, i| {
         if (wc.value.kind == .undefined_literal)
-            return self.typeErr("undefined cannot be used as a when value", span.line, span.col);
+            return self.typeErrSpan("undefined cannot be used as a when value", span);
         // Enum variant resolution in when clauses
         const when_val = blk: {
             if (match_scrutinee == .enum_val and wc.value.kind == .identifier) {
@@ -72,7 +72,7 @@ fn evalCaseValue(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses
         };
         if (!when_val.isNull() and !when_val.isUndefined() and !match_scrutinee.isNull())
             if (!h.branchTypesCompatible(match_scrutinee, when_val))
-                return self.typeErr("case when value must be same type as scrutinee", span.line, span.col);
+                return self.typeErrSpan("case when value must be same type as scrutinee", span);
         if (h.runtimeEqual(match_scrutinee, when_val)) {
             matched_idx = i;
             break;
@@ -84,7 +84,7 @@ fn evalCaseValue(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses
 
 fn evalCaseType(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses: []const Ast.WhenClause, else_node: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
     const scrutinee = try self.evalNode(scrutinee_node, scope, exclude);
-    if (scrutinee.isUndefined()) return self.rtErr("case scrutinee is undefined", span.line, span.col);
+    if (scrutinee.isUndefined()) return self.rtErrSpan("case scrutinee is undefined", scrutinee_node.span);
 
     const check_val = scrutinee.unwrapTransparent();
     const scrutinee_name: ?[]const u8 = if (scrutinee_node.kind == .identifier) scrutinee_node.kind.identifier.name else null;
@@ -92,7 +92,7 @@ fn evalCaseType(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses:
     // Validate all when-clause types
     for (when_clauses) |wc| {
         if (wc.value.kind == .undefined_literal)
-            return self.typeErr("undefined cannot be used as a when value", span.line, span.col);
+            return self.typeErrSpan("undefined cannot be used as a when value", span);
         const tn = whenClauseTypeString(self.allocator, wc) orelse continue;
         if (scrutinee == .union_val) {
             var valid = false;
@@ -100,14 +100,14 @@ fn evalCaseType(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses:
                 valid = true;
                 break;
             };
-            if (!valid) return self.typeErr("when type is not a member of the union", span.line, span.col);
+            if (!valid) return self.typeErrSpan("when type is not a member of the union", span);
         } else if (scrutinee == .tagged_union) {
             var valid = false;
             for (scrutinee.tagged_union.variants) |v| if (v.type_name) |vtn| if (std.mem.eql(u8, vtn, tn)) {
                 valid = true;
                 break;
             };
-            if (!valid) return self.typeErr("when type is not a variant type of the tagged union", span.line, span.col);
+            if (!valid) return self.typeErrSpan("when type is not a variant type of the tagged union", span);
         }
     }
 
@@ -142,7 +142,7 @@ fn evalCaseType(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses:
                     else => return e,
                 };
                 if (!h.branchTypesCompatible(result, other))
-                    return self.typeErr("case type branches have incompatible types", span.line, span.col);
+                    return self.typeErrSpan("case type branches have incompatible types", span);
             }
         }
         const else_val = self.evalNode(else_node, scope, exclude) catch |e| switch (e) {
@@ -150,7 +150,7 @@ fn evalCaseType(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses:
             else => return e,
         };
         if (!h.branchTypesCompatible(result, else_val))
-            return self.typeErr("case type branches have incompatible types", span.line, span.col);
+            return self.typeErrSpan("case type branches have incompatible types", span);
         return result;
     } else {
         const result = try self.evalNode(else_node, scope, exclude);
@@ -162,7 +162,7 @@ fn evalCaseType(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses:
                 else => return e,
             };
             if (!h.branchTypesCompatible(result, other))
-                return self.typeErr("case type branches have incompatible types", span.line, span.col);
+                return self.typeErrSpan("case type branches have incompatible types", span);
         }
         return result;
     }
@@ -287,10 +287,10 @@ fn typeExprToString(allocator: std.mem.Allocator, te: Ast.TypeExpr) ![]const u8 
 
 fn evalCaseNamed(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses: []const Ast.WhenClause, else_node: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
     const scrutinee = try self.evalNode(scrutinee_node, scope, exclude);
-    if (scrutinee.isUndefined()) return self.rtErr("case scrutinee is undefined", span.line, span.col);
+    if (scrutinee.isUndefined()) return self.rtErrSpan("case scrutinee is undefined", scrutinee_node.span);
     const tu = switch (scrutinee) {
         .tagged_union => |t| t,
-        else => return self.typeErr("'case named' requires tagged union", span.line, span.col),
+        else => return self.typeErrSpan("'case named' requires tagged union", span),
     };
 
     const scrutinee_name: ?[]const u8 = if (scrutinee_node.kind == .identifier) scrutinee_node.kind.identifier.name else null;
@@ -298,10 +298,10 @@ fn evalCaseNamed(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses
     var matched_idx: ?usize = null;
     for (when_clauses, 0..) |wc, i| {
         if (wc.value.kind == .undefined_literal)
-            return self.typeErr("undefined cannot be used as a when value", span.line, span.col);
+            return self.typeErrSpan("undefined cannot be used as a when value", span);
         const vn = if (wc.value.kind == .identifier) wc.value.kind.identifier.name else continue;
         if (!h.isValidVariantTag(tu.variants, vn))
-            return self.typeErr("unknown variant name in 'case named'", span.line, span.col);
+            return self.typeErrSpan("unknown variant name in 'case named'", span);
         if (std.mem.eql(u8, tu.tag, vn)) {
             matched_idx = i;
             break;
@@ -324,7 +324,7 @@ fn evalCaseNamed(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses
                     else => return e,
                 };
                 if (!h.branchTypesCompatible(result, other))
-                    return self.typeErr("case named branches have incompatible types", span.line, span.col);
+                    return self.typeErrSpan("case named branches have incompatible types", span);
             }
         }
         const else_val = self.evalNode(else_node, scope, exclude) catch |e| switch (e) {
@@ -332,7 +332,7 @@ fn evalCaseNamed(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses
             else => return e,
         };
         if (!h.branchTypesCompatible(result, else_val))
-            return self.typeErr("case named branches have incompatible types", span.line, span.col);
+            return self.typeErrSpan("case named branches have incompatible types", span);
         return result;
     } else {
         const result = try self.evalNode(else_node, scope, exclude);
@@ -345,7 +345,7 @@ fn evalCaseNamed(self: *Evaluator, scrutinee_node: *const Ast.Node, when_clauses
                 else => return e,
             };
             if (!h.branchTypesCompatible(result, other))
-                return self.typeErr("case named branches have incompatible types", span.line, span.col);
+                return self.typeErrSpan("case named branches have incompatible types", span);
         }
         return result;
     }
@@ -362,7 +362,7 @@ fn evalCaseBranches(self: *Evaluator, when_clauses: []const Ast.WhenClause, else
                     else => return e,
                 };
                 if (!h.branchTypesCompatible(result, other))
-                    return self.typeErr("case branches have incompatible types", span.line, span.col);
+                    return self.typeErrSpan("case branches have incompatible types", span);
             }
         }
         const else_val = self.evalNode(else_node, scope, exclude) catch |e| switch (e) {
@@ -370,7 +370,7 @@ fn evalCaseBranches(self: *Evaluator, when_clauses: []const Ast.WhenClause, else
             else => return e,
         };
         if (!h.branchTypesCompatible(result, else_val))
-            return self.typeErr("case branches have incompatible types", span.line, span.col);
+            return self.typeErrSpan("case branches have incompatible types", span);
         return result;
     } else {
         const result = try self.evalNode(else_node, scope, exclude);
@@ -380,7 +380,7 @@ fn evalCaseBranches(self: *Evaluator, when_clauses: []const Ast.WhenClause, else
                 else => return e,
             };
             if (!h.branchTypesCompatible(result, other))
-                return self.typeErr("case branches have incompatible types", span.line, span.col);
+                return self.typeErrSpan("case branches have incompatible types", span);
         }
         return result;
     }
@@ -411,10 +411,10 @@ fn getVariantDefault(variants: []const val.TaggedUnion.VariantInfo, variant_name
 pub fn evalFromEnum(self: *Evaluator, value_node: *const Ast.Node, variants: []const []const u8, scope: *Scope, exclude: ?[]const u8) EvalError!Value {
     _ = scope;
     _ = exclude;
-    if (variants.len < 2) return self.typeErr("enum must have at least 2 variants", value_node.span.line, value_node.span.col);
+    if (variants.len < 2) return self.typeErrSpan("enum must have at least 2 variants", value_node.span);
     for (variants, 0..) |v, i| {
         for (variants[0..i]) |prev| if (std.mem.eql(u8, v, prev))
-            return self.typeErr("duplicate enum variant", value_node.span.line, value_node.span.col);
+            return self.typeErrSpan("duplicate enum variant", value_node.span);
     }
     const value = switch (value_node.kind) {
         .identifier => |id| id.name,
@@ -422,18 +422,18 @@ pub fn evalFromEnum(self: *Evaluator, value_node: *const Ast.Node, variants: []c
     };
     for (variants) |v| if (std.mem.eql(u8, v, value))
         return Value{ .enum_val = .{ .value = value, .variants = variants } };
-    return self.typeErr("enum value is not a listed variant", value_node.span.line, value_node.span.col);
+    return self.typeErrSpan("enum value is not a listed variant", value_node.span);
 }
 
 pub fn evalFromUnion(self: *Evaluator, value_node: *const Ast.Node, types: []const Ast.TypeExpr, scope: *Scope, exclude: ?[]const u8) EvalError!Value {
     const value = try self.evalNode(value_node, scope, exclude);
-    if (types.len < 2) return self.typeErr("union must have at least 2 member types", value_node.span.line, value_node.span.col);
+    if (types.len < 2) return self.typeErrSpan("union must have at least 2 member types", value_node.span);
 
     const type_names = try self.allocator.alloc([]const u8, types.len);
     for (types, 0..) |t, i| type_names[i] = typeExprToString(self.allocator, t) catch "unknown";
     for (type_names, 0..) |tn, i| {
         for (type_names[0..i]) |prev| if (std.mem.eql(u8, tn, prev))
-            return self.typeErr("duplicate union member type", value_node.span.line, value_node.span.col);
+            return self.typeErrSpan("duplicate union member type", value_node.span);
     }
 
     var adopted = value;
@@ -451,7 +451,7 @@ pub fn evalFromUnion(self: *Evaluator, value_node: *const Ast.Node, types: []con
                 break;
             }
         }
-    } else return self.typeErr("union value does not match any member type", value_node.span.line, value_node.span.col);
+    } else return self.typeErrSpan("union value does not match any member type", value_node.span);
 
     const vp = try self.allocator.create(Value);
     vp.* = adopted;
@@ -466,7 +466,7 @@ pub fn evalNamedVariant(self: *Evaluator, value_node: *const Ast.Node, tag: []co
         switch (value) {
             .tagged_union => |tu| {
                 if (!h.isValidVariantTag(tu.variants, tag))
-                    return self.typeErr("unknown variant name in tagged union type reuse", value_node.span.line, value_node.span.col);
+                    return self.typeErrSpan("unknown variant name in tagged union type reuse", value_node.span);
                 const vp = try self.allocator.create(Value);
                 vp.* = tu.value.*;
                 return Value{ .tagged_union = .{ .value = vp, .tag = tag, .variants = tu.variants, .type_name = tu.type_name } };
@@ -480,23 +480,23 @@ pub fn evalNamedVariant(self: *Evaluator, value_node: *const Ast.Node, tag: []co
                     if (scope.getType(tn)) |td| {
                         if (td.kind == .tagged_union_type) {
                             if (!h.isValidVariantTag(td.kind.tagged_union_type.variants, tag))
-                                return self.typeErr("unknown variant name in tagged union type reuse", value_node.span.line, value_node.span.col);
+                                return self.typeErrSpan("unknown variant name in tagged union type reuse", value_node.span);
                             const vp = try self.allocator.create(Value);
                             vp.* = value;
                             return Value{ .tagged_union = .{ .value = vp, .tag = tag, .variants = td.kind.tagged_union_type.variants, .type_name = tn } };
                         }
                     }
                 }
-                return self.typeErr("tagged union type reuse requires known type", value_node.span.line, value_node.span.col);
+                return self.typeErrSpan("tagged union type reuse requires known type", value_node.span);
             },
         }
     }
 
-    if (variants.len < 2) return self.typeErr("tagged union must have at least 2 variants", value_node.span.line, value_node.span.col);
+    if (variants.len < 2) return self.typeErrSpan("tagged union must have at least 2 variants", value_node.span);
     const variant_infos = try self.allocator.alloc(val.TaggedUnion.VariantInfo, variants.len);
     for (variants, 0..) |v, i| {
         for (variants[0..i]) |prev| if (std.mem.eql(u8, v.name, prev.name))
-            return self.typeErr("duplicate tagged union variant", value_node.span.line, value_node.span.col);
+            return self.typeErrSpan("duplicate tagged union variant", value_node.span);
         variant_infos[i] = .{ .name = v.name, .type_name = try eval_types.typeExprToString(self, v.type_expr) };
     }
     const vp = try self.allocator.create(Value);
@@ -508,15 +508,15 @@ pub fn evalNamedVariant(self: *Evaluator, value_node: *const Ast.Node, tag: []co
 
 pub fn evalStructOverride(self: *Evaluator, base_node: *const Ast.Node, overrides_node: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
     const base = try self.evalNode(base_node, scope, exclude);
-    if (base.isUndefined()) return self.rtErr("cannot override undefined", span.line, span.col);
+    if (base.isUndefined()) return self.rtErrSpan("cannot override undefined", base_node.span);
     const bs = switch (base) {
         .struct_val => |s| s,
-        else => return self.typeErr("'with' requires struct base", span.line, span.col),
+        else => return self.typeErrSpan("'with' requires struct base", span),
     };
     const overrides = try self.evalNode(overrides_node, scope, exclude);
     const os = switch (overrides) {
         .struct_val => |s| s,
-        else => return self.typeErr("'with' overrides must be a struct", span.line, span.col),
+        else => return self.typeErrSpan("'with' overrides must be a struct", span),
     };
 
     // All override keys must exist in base
@@ -528,15 +528,15 @@ pub fn evalStructOverride(self: *Evaluator, base_node: *const Ast.Node, override
 
 pub fn evalStructExtension(self: *Evaluator, base_node: *const Ast.Node, ext_node: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
     const base = try self.evalNode(base_node, scope, exclude);
-    if (base.isUndefined()) return self.rtErr("cannot extend undefined", span.line, span.col);
+    if (base.isUndefined()) return self.rtErrSpan("cannot extend undefined", base_node.span);
     const bs = switch (base) {
         .struct_val => |s| s,
-        else => return self.typeErr("'plus' requires struct base", span.line, span.col),
+        else => return self.typeErrSpan("'plus' requires struct base", span),
     };
     const extension = try self.evalNode(ext_node, scope, exclude);
     const es = switch (extension) {
         .struct_val => |s| s,
-        else => return self.typeErr("'plus' extension must be a struct", span.line, span.col),
+        else => return self.typeErrSpan("'plus' extension must be a struct", span),
     };
 
     var new_count: usize = 0;
@@ -555,7 +555,7 @@ pub fn evalStructExtension(self: *Evaluator, base_node: *const Ast.Node, ext_nod
     for (bs.keys, bs.values, 0..) |key, base_val, i| {
         new_keys[i] = key;
         if (es.get(key)) |ov| {
-            if (ov.isUndefined()) return self.rtErr("extension field evaluates to undefined", span.line, span.col);
+            if (ov.isUndefined()) return self.rtErrSpan("extension field evaluates to undefined", span);
             new_values[i] = try applyFieldOverride(self, base_val, ov, span);
         } else {
             new_values[i] = base_val;
@@ -566,7 +566,7 @@ pub fn evalStructExtension(self: *Evaluator, base_node: *const Ast.Node, ext_nod
     var wi = bs.keys.len;
     for (es.keys, es.values) |key, ext_val| {
         if (bs.get(key) == null) {
-            if (ext_val.isUndefined()) return self.rtErr("extension field evaluates to undefined", span.line, span.col);
+            if (ext_val.isUndefined()) return self.rtErrSpan("extension field evaluates to undefined", span);
             new_keys[wi] = key;
             new_values[wi] = ext_val;
             wi += 1;
@@ -582,7 +582,7 @@ fn applyOverrides(self: *Evaluator, bs: val.Struct, os: val.Struct, preserve_typ
     for (bs.keys, bs.values, 0..) |key, base_val, i| {
         new_keys[i] = key;
         if (os.get(key)) |ov| {
-            if (ov.isUndefined()) return self.rtErr("override field evaluates to undefined", span.line, span.col);
+            if (ov.isUndefined()) return self.rtErrSpan("override field evaluates to undefined", span);
             new_values[i] = try applyFieldOverride(self, base_val, ov, span);
         } else {
             new_values[i] = base_val;
@@ -601,45 +601,45 @@ fn applyFieldOverride(self: *Evaluator, base_val: Value, ov: Value, span: Ast.Sp
         base_val.typeName();
     const adopted = h.adoptToType(ov, adopt_type_name);
     if (!h.sameCategory(base_val, adopted))
-        return self.typeErr("override field type incompatible", span.line, span.col);
+        return self.typeErrSpan("override field type incompatible", span);
     if (base_val == .struct_val and adopted == .struct_val)
         try validateStructShape(self, base_val.struct_val, adopted.struct_val, span);
     if (base_val == .integer and adopted == .integer) {
         if (base_val.integer.explicit and adopted.integer.explicit and !std.meta.eql(base_val.integer.type_ann, adopted.integer.type_ann))
-            return self.typeErr("override integer type mismatch", span.line, span.col);
+            return self.typeErrSpan("override integer type mismatch", span);
         if (base_val.integer.explicit and !h.intFitsType(adopted.integer.value, adopted.integer.type_ann))
-            return self.rtErr("override value out of range for field type", span.line, span.col);
+            return self.rtErrSpan("override value out of range for field type", span);
     }
     if (base_val == .float_val and adopted == .float_val)
         if (base_val.float_val.explicit and adopted.float_val.explicit and base_val.float_val.type_ann != adopted.float_val.type_ann)
-            return self.typeErr("override float type mismatch", span.line, span.col);
+            return self.typeErrSpan("override float type mismatch", span);
     return adopted;
 }
 
 fn validateStructShape(self: *Evaluator, base: val.Struct, over: val.Struct, span: Ast.Span) EvalError!void {
-    if (base.keys.len != over.keys.len) return self.typeErr("override struct has different shape than base", span.line, span.col);
+    if (base.keys.len != over.keys.len) return self.typeErrSpan("override struct has different shape than base", span);
     for (base.keys, base.values) |bk, bv| {
-        const ov = over.get(bk) orelse return self.typeErr("override struct missing field from base", span.line, span.col);
+        const ov = over.get(bk) orelse return self.typeErrSpan("override struct missing field from base", span);
         if (bv == .struct_val and ov == .struct_val) {
             try validateStructShape(self, bv.struct_val, ov.struct_val, span);
         } else if (!bv.isNull() and !ov.isNull() and !h.sameCategory(bv, ov)) {
-            return self.typeErr("override struct field type incompatible", span.line, span.col);
+            return self.typeErrSpan("override struct field type incompatible", span);
         }
     }
     if (base.type_name) |btn| if (over.type_name) |otn| if (!std.mem.eql(u8, btn, otn))
-        return self.typeErr("override struct named type mismatch", span.line, span.col);
+        return self.typeErrSpan("override struct named type mismatch", span);
 }
 
 // ── Field extraction (`of`) ─────────────────────────────────
 
 pub fn evalFieldExtraction(self: *Evaluator, source_node: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
-    const field_name = exclude orelse return self.typeErr("field extraction requires binding context", span.line, span.col);
+    const field_name = exclude orelse return self.typeErrSpan("field extraction requires binding context", span);
     const source = try self.evalNode(source_node, scope, exclude);
     if (source.isUndefined()) return .undefined;
     return switch (source) {
         .struct_val => |s| if (s.get(field_name)) |v| v else .undefined,
-        .null_val => self.typeErr("cannot extract field from null", span.line, span.col),
-        else => self.typeErr("'of' requires a struct value", span.line, span.col),
+        .null_val => self.typeErrSpan("cannot extract field from null", span),
+        else => self.typeErrSpan("'of' requires a struct value", span),
     };
 }
 
@@ -699,18 +699,47 @@ pub fn evalFunctionCall(self: *Evaluator, callee_node: *const Ast.Node, arg_node
     }
 
     const callee = try self.evalNode(callee_node, scope, exclude);
-    if (callee.isUndefined()) return self.rtErr("calling undefined value", span.line, span.col);
+    if (callee.isUndefined()) return self.rtErrSpan("calling undefined value", callee_node.span);
     const func = switch (callee) {
         .function => |f| f,
-        else => return self.typeErr("calling a non-function value", span.line, span.col),
+        else => return self.typeErrSpan("calling a non-function value", span),
     };
 
     const args = try self.allocator.alloc(Value, arg_nodes.len);
-    for (arg_nodes, 0..) |an, idx| args[idx] = try self.evalNode(an, scope, exclude);
-    for (args) |arg| if (arg.isUndefined()) return self.rtErr("undefined argument in function call", span.line, span.col);
+    var has_undefined = false;
+    for (arg_nodes, 0..) |an, idx| {
+        if (self.evalNode(an, scope, exclude)) |v| {
+            args[idx] = v;
+        } else |_| {
+            if (self.last_error) |le| self.collected_errors.append(self.allocator, le) catch {};
+            self.last_error = null;
+            args[idx] = .undefined;
+        }
+        if (args[idx].isUndefined()) has_undefined = true;
+    }
+    if (has_undefined) {
+        const ops = @import("eval_ops.zig");
+        var last_undef_node: ?*const Ast.Node = null;
+        for (args, arg_nodes) |arg, an| {
+            if (arg.isUndefined() and ops.isDirectReference(an)) {
+                if (last_undef_node) |prev| {
+                    const err_mod = @import("error.zig");
+                    self.collected_errors.append(self.allocator, err_mod.UzonError.init(
+                        self.allocator, .runtime, "undefined argument in function call", prev.span.line, prev.span.col,
+                    )) catch {};
+                }
+                last_undef_node = an;
+            }
+        }
+        if (last_undef_node) |node|
+            return self.rtErrSpan("undefined argument in function call", node.span);
+        // All undefined from sub-expression errors — already collected
+        self.last_error = null;
+        return error.UzonRuntime;
+    }
 
     // Recursion detection
-    for (self.call_stack.items) |active| if (active == func.body_expr) return self.typeErr("recursive function call detected", span.line, span.col);
+    for (self.call_stack.items) |active| if (active == func.body_expr) return self.typeErrSpan("recursive function call detected", span);
     self.call_stack.append(self.allocator, func.body_expr) catch return error.OutOfMemory;
     defer _ = self.call_stack.pop();
 
@@ -719,7 +748,7 @@ pub fn evalFunctionCall(self: *Evaluator, callee_node: *const Ast.Node, arg_node
         required += 1;
     };
     if (args.len < required or args.len > func.params.len)
-        return self.typeErr("wrong number of arguments", span.line, span.col);
+        return self.typeErrSpan("wrong number of arguments", span);
 
     var func_scope = Scope.init(self.allocator);
     for (func.captured_keys, func.captured_values) |key, v| try func_scope.define(key, v);
@@ -728,15 +757,16 @@ pub fn evalFunctionCall(self: *Evaluator, callee_node: *const Ast.Node, arg_node
     for (func.params, 0..) |param, idx| {
         if (idx < args.len) {
             var arg = args[idx];
+            const arg_span = arg_nodes[idx].span;
             if (param.type_expr.data == .tuple and arg == .tuple)
                 if (arg.tuple.elements.len != param.type_expr.data.tuple.len)
-                    return self.typeErr("tuple arity mismatch in function argument", span.line, span.col);
+                    return self.typeErrSpan("tuple arity mismatch in function argument", arg_span);
             if (param.type_expr.data == .name) {
                 const tn = param.type_expr.data.name;
                 if (!arg.isNull() and !arg.isUndefined()) {
                     arg = h.adoptToType(arg, tn);
                     if (!h.valueMatchesType(arg, tn))
-                        return self.typeErr("argument type mismatch", span.line, span.col);
+                        return self.typeErrSpan("argument type mismatch", arg_span);
                 }
             }
             try func_scope.define(param.name, arg);
@@ -752,8 +782,10 @@ pub fn evalFunctionCall(self: *Evaluator, callee_node: *const Ast.Node, arg_node
         const rtn = func.return_type.data.name;
         if (!result.isNull() and !result.isUndefined()) {
             result = h.adoptToType(result, rtn);
-            if (!h.valueMatchesType(result, rtn))
-                return self.typeErr("function return type mismatch", span.line, span.col);
+            if (!h.valueMatchesType(result, rtn)) {
+                const body_span = func.body_expr.span;
+                return self.typeErrSpan("function return type mismatch", body_span);
+            }
         }
     }
     return result;
@@ -761,8 +793,8 @@ pub fn evalFunctionCall(self: *Evaluator, callee_node: *const Ast.Node, arg_node
 
 // ── File import ──────────────────────────────────────────────
 
-pub fn evalStructImport(self: *Evaluator, path: []const u8, span: Ast.Span) EvalError!Value {
-    const base = self.base_dir orelse return self.rtErr("file imports require a base directory", span.line, span.col);
+pub fn evalStructImport(self: *Evaluator, path: []const u8, path_span: Ast.Span, span: Ast.Span) EvalError!Value {
+    const base = self.base_dir orelse return self.rtErrSpan("file imports require a base directory", span);
 
     const last_component = if (std.mem.lastIndexOfScalar(u8, path, '/')) |sep| path[sep + 1 ..] else path;
     const has_ext = std.mem.indexOfScalar(u8, last_component, '.') != null;
@@ -780,10 +812,10 @@ pub fn evalStructImport(self: *Evaluator, path: []const u8, span: Ast.Span) Eval
         return cached;
     }
     for (self.import_stack.items) |active| if (std.mem.eql(u8, active, import_file))
-        return self.circErr("circular file import detected", span.line, span.col);
+        return self.circErr("circular file import detected", path_span.line, path_span.col);
 
     const source = std.fs.cwd().readFileAlloc(self.allocator, import_file, 4 * 1024 * 1024) catch
-        return self.rtErr("cannot read import file", span.line, span.col);
+        return self.rtErrSpan("cannot read import file", path_span);
 
     self.import_stack.append(self.allocator, import_file) catch return error.OutOfMemory;
 
@@ -791,7 +823,7 @@ pub fn evalStructImport(self: *Evaluator, path: []const u8, span: Ast.Span) Eval
 
     const Lexer = @import("Lexer.zig");
     var lexer = Lexer.init(self.allocator, source);
-    const tokens = lexer.tokenize() catch return self.rtErr("syntax error in imported file", span.line, span.col);
+    const tokens = lexer.tokenize() catch return self.rtErrSpan("syntax error in imported file", span);
 
     const Parser = @import("Parser.zig");
     var parser = Parser.init(self.allocator, tokens, lexer.comment_lines.items);
@@ -804,7 +836,7 @@ pub fn evalStructImport(self: *Evaluator, path: []const u8, span: Ast.Span) Eval
             self.last_error = ie;
             return error.UzonType;
         }
-        return self.rtErr("parse error in imported file", span.line, span.col);
+        return self.rtErrSpan("parse error in imported file", span);
     };
 
     const saved_base = self.base_dir;
@@ -832,7 +864,7 @@ pub fn evalStructImport(self: *Evaluator, path: []const u8, span: Ast.Span) Eval
             return error.UzonCircular;
         }
         self.last_error = saved_error;
-        return self.rtErr("evaluation error in imported file", span.line, span.col);
+        return self.rtErrSpan("evaluation error in imported file", span);
     };
 
     self.last_import_types = import_type_scope.types;

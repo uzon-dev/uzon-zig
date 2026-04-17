@@ -4,6 +4,8 @@ const std = @import("std");
 pub const Span = struct {
     line: u32,
     col: u32,
+    end_line: u32 = 0,
+    end_col: u32 = 0,
 };
 
 /// Binary operators (§5.2–5.8).
@@ -153,7 +155,7 @@ pub const Node = struct {
         function_call: struct { callee: *const Node, args: []const *const Node },
 
         // Import & special
-        struct_import: struct { path: []const u8 },
+        struct_import: struct { path: []const u8, path_span: Span },
         field_extraction: struct { source: *const Node },
 
         // Type pattern (for case type when clauses with compound types)

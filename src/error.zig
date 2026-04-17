@@ -5,6 +5,8 @@ const std = @import("std");
 pub const Location = struct {
     line: u32 = 0,
     col: u32 = 0,
+    end_line: u32 = 0,
+    end_col: u32 = 0,
     filename: ?[]const u8 = null,
 
     pub fn write(self: Location, writer: anytype) !void {
@@ -12,6 +14,9 @@ pub const Location = struct {
             try writer.print("{s}:{d}:{d}", .{ f, self.line, self.col });
         } else {
             try writer.print("{d}:{d}", .{ self.line, self.col });
+        }
+        if (self.end_line != 0 or self.end_col != 0) {
+            try writer.print("-{d}:{d}", .{ self.end_line, self.end_col });
         }
     }
 };
@@ -50,6 +55,16 @@ pub const UzonError = struct {
             .message = message,
             .suggestion = suggestion,
             .location = .{ .line = line, .col = col },
+            .import_trace = .{},
+            .allocator = allocator,
+        };
+    }
+
+    pub fn initSpan(allocator: std.mem.Allocator, kind: ErrorKind, message: []const u8, span: @import("Ast.zig").Span) UzonError {
+        return .{
+            .kind = kind,
+            .message = message,
+            .location = .{ .line = span.line, .col = span.col, .end_line = span.end_line, .end_col = span.end_col },
             .import_trace = .{},
             .allocator = allocator,
         };

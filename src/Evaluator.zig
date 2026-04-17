@@ -57,6 +57,23 @@ pub fn circErr(self: *Evaluator, msg: []const u8, line: u32, col: u32) EvalError
     return error.UzonCircular;
 }
 
+pub fn typeErrSpan(self: *Evaluator, msg: []const u8, span: Ast.Span) EvalError {
+    self.last_error = UzonError.initSpan(self.allocator, .type_, msg, span);
+    return error.UzonType;
+}
+
+pub fn rtErrSpan(self: *Evaluator, msg: []const u8, span: Ast.Span) EvalError {
+    self.last_error = UzonError.initSpan(self.allocator, .runtime, msg, span);
+    return error.UzonRuntime;
+}
+
+pub fn rtErrSugSpan(self: *Evaluator, msg: []const u8, sug: []const u8, span: Ast.Span) EvalError {
+    var e = UzonError.initSpan(self.allocator, .runtime, msg, span);
+    e.suggestion = sug;
+    self.last_error = e;
+    return error.UzonRuntime;
+}
+
 pub fn currentFilename(self: *const Evaluator) ?[]const u8 {
     if (self.import_stack.items.len > 0) return self.import_stack.getLast();
     return null;
@@ -85,7 +102,7 @@ pub fn evalDocumentInScope(self: *Evaluator, doc: Ast.Document, import_scope: ?*
         if (scope.get(b.name, null)) |v| {
             values[i] = v.*;
         } else {
-            return self.rtErr("binding not found after evaluation", b.span.line, b.span.col);
+            return self.rtErrSpan("binding not found after evaluation", b.span);
         }
     }
     return Value{ .struct_val = .{ .keys = keys, .values = values } };
@@ -98,7 +115,7 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
     {
         var seen = std.StringHashMapUnmanaged(Ast.Span){};
         for (bindings) |b| {
-            if (seen.get(b.name)) |_| return self.typeErr("duplicate binding name", b.span.line, b.span.col);
+            if (seen.get(b.name)) |_| return self.typeErrSpan("duplicate binding name", b.span);
             try seen.put(self.allocator, b.name, b.span);
         }
     }
@@ -172,11 +189,6 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
                 continue;
             },
             else => {
-                // If a previous binding already failed, this failure may be
-                // a secondary consequence (e.g. undefined value because the
-                // failed binding was never defined). Skip it.
-                if (had_errors) continue;
-                // Otherwise collect the error and continue evaluating.
                 if (self.last_error) |le| self.collected_errors.append(self.allocator, le) catch {};
                 had_errors = true;
                 continue;
@@ -256,7 +268,7 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
                     if (param.type_expr.data == .name) {
                         const name = param.type_expr.data.name;
                         if (!eval_types.isBuiltinTypeName(name) and scope.getType(name) == null)
-                            return self.typeErr("unknown type name in function parameter", param.span.line, param.span.col);
+                            return self.typeErrSpan("unknown type name in function parameter", param.span);
                     }
                 }
             }
@@ -305,7 +317,7 @@ pub fn evalNode(self: *Evaluator, node: *const Ast.Node, scope: *Scope, exclude:
 
         .function_expr => |fe| eval_exprs.evalFunctionExpr(self, fe.params, fe.return_type, fe.body_bindings, fe.body_expr, scope),
         .function_call => |fc| eval_exprs.evalFunctionCall(self, fc.callee, fc.args, scope, exclude, node.span),
-        .struct_import => |si| eval_exprs.evalStructImport(self, si.path, node.span),
+        .struct_import => |si| eval_exprs.evalStructImport(self, si.path, si.path_span, node.span),
         .type_pattern => .undefined, // only meaningful inside case type evaluation
     };
 }
@@ -313,12 +325,12 @@ pub fn evalNode(self: *Evaluator, node: *const Ast.Node, scope: *Scope, exclude:
 // ── Literal evaluation ───────────────────────────────────────
 
 fn evalIntegerLiteral(self: *Evaluator, text: []const u8, span: Ast.Span) EvalError!Value {
-    const parsed = h.parseIntegerText(self.allocator, text) catch return self.rtErr("invalid integer literal", span.line, span.col);
+    const parsed = h.parseIntegerText(self.allocator, text) catch return self.rtErrSpan("invalid integer literal", span);
     return Value{ .integer = .{ .value = parsed } };
 }
 
 fn evalFloatLiteral(self: *Evaluator, text: []const u8, span: Ast.Span) EvalError!Value {
-    const parsed = h.parseFloatText(self.allocator, text) catch return self.rtErr("invalid float literal", span.line, span.col);
+    const parsed = h.parseFloatText(self.allocator, text) catch return self.rtErrSpan("invalid float literal", span);
     return Value{ .float_val = .{ .value = parsed } };
 }
 
@@ -332,7 +344,7 @@ fn evalStringLiteral(self: *Evaluator, parts: []const Ast.StringPart, scope: *Sc
             .literal => |s| buf.appendSlice(self.allocator, try self.unescapeString(s, span)) catch return error.OutOfMemory,
             .interpolation => |expr| {
                 const v = try self.evalNode(expr, scope, exclude);
-                if (v.isUndefined()) return self.rtErr("undefined value in string interpolation", span.line, span.col);
+                if (v.isUndefined()) return self.rtErrSpan("undefined value in string interpolation", expr.span);
                 buf.appendSlice(self.allocator, try self.valueToString(v)) catch return error.OutOfMemory;
             },
         }
@@ -376,27 +388,27 @@ fn unescapeString(self: *Evaluator, raw: []const u8, span: Ast.Span) EvalError![
                     i += 2;
                 },
                 'x' => {
-                    if (i + 3 >= raw.len) return self.rtErr("incomplete \\x escape sequence", span.line, span.col);
-                    const hi = std.fmt.charToDigit(raw[i + 2], 16) catch return self.rtErr("invalid hex digit in \\x escape", span.line, span.col);
-                    if (i + 4 > raw.len) return self.rtErr("incomplete \\x escape sequence", span.line, span.col);
-                    const lo = std.fmt.charToDigit(raw[i + 3], 16) catch return self.rtErr("invalid hex digit in \\x escape", span.line, span.col);
+                    if (i + 3 >= raw.len) return self.rtErrSpan("incomplete \\x escape sequence", span);
+                    const hi = std.fmt.charToDigit(raw[i + 2], 16) catch return self.rtErrSpan("invalid hex digit in \\x escape", span);
+                    if (i + 4 > raw.len) return self.rtErrSpan("incomplete \\x escape sequence", span);
+                    const lo = std.fmt.charToDigit(raw[i + 3], 16) catch return self.rtErrSpan("invalid hex digit in \\x escape", span);
                     const byte_val = hi * 16 + lo;
-                    if (byte_val > 0x7F) return self.rtErr("\\x escape value exceeds ASCII range (0x00-0x7F)", span.line, span.col);
+                    if (byte_val > 0x7F) return self.rtErrSpan("\\x escape value exceeds ASCII range (0x00-0x7F)", span);
                     try buf.append(self.allocator, byte_val);
                     i += 4;
                 },
                 'u' => {
-                    if (i + 2 >= raw.len or raw[i + 2] != '{') return self.rtErr("invalid \\u escape: expected '{'", span.line, span.col);
-                    const end = std.mem.indexOfScalarPos(u8, raw, i + 3, '}') orelse return self.rtErr("unterminated \\u{...} escape", span.line, span.col);
+                    if (i + 2 >= raw.len or raw[i + 2] != '{') return self.rtErrSpan("invalid \\u escape: expected '{'", span);
+                    const end = std.mem.indexOfScalarPos(u8, raw, i + 3, '}') orelse return self.rtErrSpan("unterminated \\u{...} escape", span);
                     const hex_str = raw[i + 3 .. end];
-                    if (hex_str.len == 0 or hex_str.len > 6) return self.rtErr("\\u{...} requires 1-6 hex digits", span.line, span.col);
-                    const codepoint = std.fmt.parseInt(u21, hex_str, 16) catch return self.rtErr("invalid hex digits in \\u{...} escape", span.line, span.col);
+                    if (hex_str.len == 0 or hex_str.len > 6) return self.rtErrSpan("\\u{...} requires 1-6 hex digits", span);
+                    const codepoint = std.fmt.parseInt(u21, hex_str, 16) catch return self.rtErrSpan("invalid hex digits in \\u{...} escape", span);
                     var utf8_buf: [4]u8 = undefined;
-                    const len = std.unicode.utf8Encode(codepoint, &utf8_buf) catch return self.rtErr("invalid Unicode scalar value", span.line, span.col);
+                    const len = std.unicode.utf8Encode(codepoint, &utf8_buf) catch return self.rtErrSpan("invalid Unicode scalar value", span);
                     try buf.appendSlice(self.allocator, utf8_buf[0..len]);
                     i = end + 1;
                 },
-                else => return self.rtErr("invalid escape sequence", span.line, span.col),
+                else => return self.rtErrSpan("invalid escape sequence", span),
             }
         } else {
             try buf.append(self.allocator, raw[i]);
@@ -421,7 +433,7 @@ fn evalMemberAccess(self: *Evaluator, object_node: *const Ast.Node, member: []co
         return .undefined;
     }
     const object = try self.evalNode(object_node, scope, exclude);
-    if (object.isNull()) return self.typeErr("cannot access member on null", span.line, span.col);
+    if (object.isNull()) return self.typeErrSpan("cannot access member on null", span);
     if (object.isUndefined()) return .undefined;
 
     const obj = object.unwrapTransparent();
@@ -453,7 +465,7 @@ fn evalStructLiteral(self: *Evaluator, fields: []const Ast.Binding, parent_scope
         if (child_scope.get(f.name, null)) |v| {
             values[i] = v.*;
         } else {
-            return self.rtErr("struct field not found after evaluation", f.span.line, f.span.col);
+            return self.rtErrSpan("struct field not found after evaluation", f.span);
         }
     }
     return Value{ .struct_val = .{ .keys = keys, .values = values } };

@@ -423,3 +423,174 @@ test "eval list member access" {
     const result = try eval(a, n);
     try std.testing.expectEqual(@as(i128, 20), result.integer.value);
 }
+
+// ── Multi-error collection tests (via parse API) ────────
+
+const root = @import("root.zig");
+
+test "multi-error: chained concat reports both undefined names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const result = root.parse(a, "label is first_name ++ \" \" ++ last_name");
+    switch (result) {
+        .value => return error.TestUnexpectedResult,
+        .errors => |errs| {
+            try std.testing.expect(errs.len >= 2);
+            try std.testing.expectEqual(@as(u32, 10), errs[0].location.col); // first_name
+            try std.testing.expectEqual(@as(u32, 31), errs[1].location.col); // last_name
+        },
+    }
+}
+
+test "multi-error: both undefined in arithmetic" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const result = root.parse(a, "result is aaa + bbb");
+    switch (result) {
+        .value => return error.TestUnexpectedResult,
+        .errors => |errs| {
+            try std.testing.expect(errs.len >= 2);
+            var found_aaa = false;
+            var found_bbb = false;
+            for (errs) |e| {
+                if (e.location.col == 11) found_aaa = true; // aaa
+                if (e.location.col == 17) found_bbb = true; // bbb
+            }
+            try std.testing.expect(found_aaa);
+            try std.testing.expect(found_bbb);
+        },
+    }
+}
+
+test "multi-error: function call with multiple undefined args" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src =
+        \\greet is function a as string, b as string, c as string returns string { a ++ " " ++ b ++ " " ++ c }
+        \\result is greet(xxx, "hello", yyy)
+    ;
+    const result = root.parse(a, src);
+    switch (result) {
+        .value => return error.TestUnexpectedResult,
+        .errors => |errs| {
+            try std.testing.expect(errs.len >= 2);
+            // Both xxx and yyy should be reported at their locations
+            try std.testing.expectEqual(@as(u32, 17), errs[0].location.col); // xxx
+            try std.testing.expectEqual(@as(u32, 31), errs[1].location.col); // yyy
+        },
+    }
+}
+
+test "multi-error: stdlib call with undefined arg points to arg" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src = "evens is std.filter(numbers, function n as i64 returns bool { n % 2 is 0 })";
+    const result = root.parse(a, src);
+    switch (result) {
+        .value => return error.TestUnexpectedResult,
+        .errors => |errs| {
+            try std.testing.expect(errs.len >= 1);
+            // Error should point to 'numbers' (col 21), not the opening paren
+            try std.testing.expectEqual(@as(u32, 21), errs[0].location.col);
+        },
+    }
+}
+
+test "error location: return type mismatch points to body expression" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const src =
+        \\f1 is function t as (i32, string) returns i32 {
+        \\    t.second ** t.first
+        \\}
+        \\
+        \\f1_result is f1((2, "hello"))
+    ;
+    const result = root.parse(a, src);
+    switch (result) {
+        .value => return error.TestUnexpectedResult,
+        .errors => |errs| {
+            try std.testing.expect(errs.len >= 1);
+            // Error should point to body expression (line 2), not call site (line 5)
+            try std.testing.expectEqual(@as(u32, 2), errs[0].location.line);
+        },
+    }
+}
+
+test "multi-error: function body error points inside body" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Direct call: body references 'unknown' — error should point inside body
+    const src1 = "double is function n as i64 returns i64 { n + unknown }\nresult is double(1 as i64)";
+    const r1 = root.parse(a, src1);
+    switch (r1) {
+        .value => return error.TestUnexpectedResult,
+        .errors => |errs| {
+            try std.testing.expect(errs.len >= 1);
+            try std.testing.expectEqual(@as(u32, 47), errs[0].location.col); // 'unknown' inside body
+        },
+    }
+
+    // HOF: same function body error via std.map
+    const src2 =
+        \\nums is [1 as i64, 2 as i64]
+        \\result is std.map(nums, function n as i64 returns i64 { n + unknown })
+    ;
+    const r2 = root.parse(a, src2);
+    switch (r2) {
+        .value => return error.TestUnexpectedResult,
+        .errors => |errs| {
+            try std.testing.expect(errs.len >= 1);
+            try std.testing.expectEqual(@as(u32, 61), errs[0].location.col); // 'unknown' inside body
+        },
+    }
+}
+
+test "error location: type error spans entire expression range" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // true + 42 — type error should span from true (col 11) to 42 (col 18+2=20)
+    const result = root.parse(a, "result is true + 42");
+    switch (result) {
+        .value => return error.TestUnexpectedResult,
+        .errors => |errs| {
+            try std.testing.expect(errs.len >= 1);
+            try std.testing.expectEqual(@as(u32, 11), errs[0].location.col); // start: true
+            try std.testing.expectEqual(@as(u32, 1), errs[0].location.line);
+            try std.testing.expectEqual(@as(u32, 1), errs[0].location.end_line); // same line
+            try std.testing.expectEqual(@as(u32, 20), errs[0].location.end_col); // end: col(18) + len("42")
+        },
+    }
+}
+
+test "error location: concat type error spans full expression" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // true ++ 42 — should span from true to 42
+    const result = root.parse(a, "result is true ++ 42");
+    switch (result) {
+        .value => return error.TestUnexpectedResult,
+        .errors => |errs| {
+            try std.testing.expect(errs.len >= 1);
+            try std.testing.expectEqual(@as(u32, 11), errs[0].location.col); // start: true
+            try std.testing.expectEqual(@as(u32, 1), errs[0].location.end_line);
+            try std.testing.expect(errs[0].location.end_col > 11); // end extends past start
+        },
+    }
+}

@@ -74,6 +74,15 @@ fn span(self: *const Parser) Ast.Span {
     return .{ .line = tok.line, .col = tok.col };
 }
 
+/// Create a span from `start` to the end of the previous token.
+fn endSpan(self: *const Parser, start: Ast.Span) Ast.Span {
+    if (self.pos > 0) {
+        const prev = self.tokens[self.pos - 1];
+        return .{ .line = start.line, .col = start.col, .end_line = prev.line, .end_col = prev.col + @as(u32, @intCast(prev.lexeme.len)) };
+    }
+    return start;
+}
+
 fn node(self: *Parser, kind: Ast.Node.Kind, s: Ast.Span) Error!*const Ast.Node {
     const n = try self.allocator.create(Ast.Node);
     n.* = .{ .kind = kind, .span = s };
@@ -318,10 +327,10 @@ fn parseOrElse(self: *Parser) Error!*const Ast.Node {
         self.skipNewlines();
         break :blk self.at(.or_else);
     }) {
-        const s = self.span();
         _ = self.advance();
         self.skipNewlines();
-        left = try self.node(.{ .or_else = .{ .left = left, .right = try self.parseOr() } }, s);
+        const right = try self.parseOr();
+        left = try self.node(.{ .or_else = .{ .left = left, .right = right } }, self.endSpan(left.span));
     }
     return left;
 }
@@ -333,10 +342,10 @@ fn parseOr(self: *Parser) Error!*const Ast.Node {
         self.skipNewlines();
         break :blk self.at(.@"or");
     }) {
-        const s = self.span();
         _ = self.advance();
         self.skipNewlines();
-        left = try self.node(.{ .binary_op = .{ .op = .@"or", .left = left, .right = try self.parseAnd() } }, s);
+        const right_or = try self.parseAnd();
+        left = try self.node(.{ .binary_op = .{ .op = .@"or", .left = left, .right = right_or } }, self.endSpan(left.span));
     }
     return left;
 }
@@ -348,10 +357,10 @@ fn parseAnd(self: *Parser) Error!*const Ast.Node {
         self.skipNewlines();
         break :blk self.at(.@"and");
     }) {
-        const s = self.span();
         _ = self.advance();
         self.skipNewlines();
-        left = try self.node(.{ .binary_op = .{ .op = .@"and", .left = left, .right = try self.parseNot() } }, s);
+        const right_and = try self.parseNot();
+        left = try self.node(.{ .binary_op = .{ .op = .@"and", .left = left, .right = right_and } }, self.endSpan(left.span));
     }
     return left;
 }
@@ -362,7 +371,8 @@ fn parseNot(self: *Parser) Error!*const Ast.Node {
         const s = self.span();
         _ = self.advance();
         self.skipNewlines();
-        return self.node(.{ .unary_op = .{ .op = .not, .operand = try self.parseNot() } }, s);
+        const operand = try self.parseNot();
+        return self.node(.{ .unary_op = .{ .op = .not, .operand = operand } }, self.endSpan(s));
     }
     return self.parseEquality();
 }
@@ -371,7 +381,6 @@ fn parseNot(self: *Parser) Error!*const Ast.Node {
 fn parseEquality(self: *Parser) Error!*const Ast.Node {
     const left = try self.parseMembership();
     self.skipNewlines();
-    const s = self.span();
     const op: ?Ast.BinaryOp = switch (self.peek().type) {
         .is => .eq,
         .is_not => .neq,
@@ -392,7 +401,7 @@ fn parseEquality(self: *Parser) Error!*const Ast.Node {
             const t = self.advance();
             break :blk try self.node(.{ .identifier = .{ .name = t.lexeme } }, .{ .line = t.line, .col = t.col });
         } else try self.parseMembership();
-        return self.node(.{ .binary_op = .{ .op = binary_op, .left = left, .right = right } }, s);
+        return self.node(.{ .binary_op = .{ .op = binary_op, .left = left, .right = right } }, self.endSpan(left.span));
     }
     return left;
 }
@@ -402,10 +411,10 @@ fn parseMembership(self: *Parser) Error!*const Ast.Node {
     const left = try self.parseRelational();
     self.skipNewlines();
     if (self.at(.in_)) {
-        const s = self.span();
         _ = self.advance();
         self.skipNewlines();
-        return self.node(.{ .binary_op = .{ .op = .in_, .left = left, .right = try self.parseRelational() } }, s);
+        const right = try self.parseRelational();
+        return self.node(.{ .binary_op = .{ .op = .in_, .left = left, .right = right } }, self.endSpan(left.span));
     }
     return left;
 }
@@ -418,10 +427,10 @@ fn parseRelational(self: *Parser) Error!*const Ast.Node {
         .lt => .lt, .le => .le, .gt => .gt, .ge => .ge, else => null,
     };
     if (op) |binary_op| {
-        const s = self.span();
         _ = self.advance();
         self.skipNewlines();
-        return self.node(.{ .binary_op = .{ .op = binary_op, .left = left, .right = try self.parseConcat() } }, s);
+        const right = try self.parseConcat();
+        return self.node(.{ .binary_op = .{ .op = binary_op, .left = left, .right = right } }, self.endSpan(left.span));
     }
     return left;
 }
@@ -433,10 +442,10 @@ fn parseConcat(self: *Parser) Error!*const Ast.Node {
         self.skipNewlines();
         break :blk self.at(.plus_plus);
     }) {
-        const s = self.span();
         _ = self.advance();
         self.skipNewlines();
-        left = try self.node(.{ .binary_op = .{ .op = .concat, .left = left, .right = try self.parseAddition() } }, s);
+        const right_cc = try self.parseAddition();
+        left = try self.node(.{ .binary_op = .{ .op = .concat, .left = left, .right = right_cc } }, self.endSpan(left.span));
     }
     return left;
 }
@@ -450,10 +459,10 @@ fn parseAddition(self: *Parser) Error!*const Ast.Node {
             .plus_op => .add, .minus => .sub, else => null,
         };
         if (op) |binary_op| {
-            const s = self.span();
             _ = self.advance();
             self.skipNewlines();
-            left = try self.node(.{ .binary_op = .{ .op = binary_op, .left = left, .right = try self.parseMultiplication() } }, s);
+            const right_add = try self.parseMultiplication();
+            left = try self.node(.{ .binary_op = .{ .op = binary_op, .left = left, .right = right_add } }, self.endSpan(left.span));
         } else break;
     }
     return left;
@@ -468,10 +477,10 @@ fn parseMultiplication(self: *Parser) Error!*const Ast.Node {
             .star => .mul, .slash => .div, .percent => .mod_, .star_star => .repeat, else => null,
         };
         if (op) |binary_op| {
-            const s = self.span();
             _ = self.advance();
             self.skipNewlines();
-            left = try self.node(.{ .binary_op = .{ .op = binary_op, .left = left, .right = try self.parseUnary() } }, s);
+            const right_mul = try self.parseUnary();
+            left = try self.node(.{ .binary_op = .{ .op = binary_op, .left = left, .right = right_mul } }, self.endSpan(left.span));
         } else break;
     }
     return left;
@@ -483,7 +492,8 @@ fn parseUnary(self: *Parser) Error!*const Ast.Node {
         const s = self.span();
         _ = self.advance();
         self.skipNewlines();
-        return self.node(.{ .unary_op = .{ .op = .negate, .operand = try self.parsePower() } }, s);
+        const operand = try self.parsePower();
+        return self.node(.{ .unary_op = .{ .op = .negate, .operand = operand } }, self.endSpan(s));
     }
     return self.parsePower();
 }
@@ -493,10 +503,10 @@ fn parsePower(self: *Parser) Error!*const Ast.Node {
     const base = try self.parseTypeDecl();
     self.skipNewlines();
     if (self.at(.caret)) {
-        const s = self.span();
         _ = self.advance();
         self.skipNewlines();
-        return self.node(.{ .binary_op = .{ .op = .pow, .left = base, .right = try self.parseUnary() } }, s);
+        const right = try self.parseUnary();
+        return self.node(.{ .binary_op = .{ .op = .pow, .left = base, .right = right } }, self.endSpan(base.span));
     }
     return base;
 }
@@ -530,17 +540,17 @@ fn parseTypeAnnotation(self: *Parser) Error!*const Ast.Node {
     if (self.suppress_as) return expr;
     self.skipNewlines();
     if (self.at(.as)) {
-        const s = self.span();
         _ = self.advance();
         self.skipNewlines();
-        var result = try self.node(.{ .type_annotation = .{ .expr = expr, .type_expr = try self.parseTypeExpr() } }, s);
+        const te = try self.parseTypeExpr();
+        var result = try self.node(.{ .type_annotation = .{ .expr = expr, .type_expr = te } }, self.endSpan(expr.span));
         // Allow chained `to` after `as`
         self.skipNewlines();
         if (self.at(.to)) {
-            const to_s = self.span();
             _ = self.advance();
             self.skipNewlines();
-            result = try self.node(.{ .conversion = .{ .expr = result, .type_expr = try self.parseTypeExpr() } }, to_s);
+            const to_te = try self.parseTypeExpr();
+            result = try self.node(.{ .conversion = .{ .expr = result, .type_expr = to_te } }, self.endSpan(result.span));
         }
         return result;
     }
@@ -553,19 +563,19 @@ fn parseStructOverride(self: *Parser) Error!*const Ast.Node {
     self.skipNewlines();
     if (self.at(.with) or self.at(.plus)) {
         const is_ext = self.at(.plus);
-        const s = self.span();
         _ = self.advance();
         self.skipNewlines();
         const rhs = try self.parseStructLiteral();
+        const full_span = self.endSpan(expr.span);
         self.skipNewlines();
         if (self.at(.with) or self.at(.plus)) {
             const t = self.peek();
             return self.failSug("cannot chain 'with'/'plus'", "use an intermediate binding", t.line, t.col);
         }
         return if (is_ext)
-            self.node(.{ .struct_extension = .{ .base = expr, .extension = rhs } }, s)
+            self.node(.{ .struct_extension = .{ .base = expr, .extension = rhs } }, full_span)
         else
-            self.node(.{ .struct_override = .{ .base = expr, .overrides = rhs } }, s);
+            self.node(.{ .struct_override = .{ .base = expr, .overrides = rhs } }, full_span);
     }
     return expr;
 }
@@ -575,10 +585,9 @@ fn parseConversion(self: *Parser) Error!*const Ast.Node {
     const expr = try self.parseCallOrAccess();
     self.skipNewlines();
     if (self.at(.to)) {
-        const s = self.span();
         _ = self.advance();
         self.skipNewlines();
-        return self.node(.{ .conversion = .{ .expr = expr, .type_expr = try self.parseTypeExpr() } }, s);
+        return self.node(.{ .conversion = .{ .expr = expr, .type_expr = try self.parseTypeExpr() } }, self.endSpan(expr.span));
     }
     return expr;
 }
@@ -592,10 +601,9 @@ fn parseCallOrAccess(self: *Parser) Error!*const Ast.Node {
         if (self.at(.dot)) {
             _ = self.advance();
             const m = self.advance();
-            expr = try self.node(.{ .member_access = .{ .object = expr, .member = m.lexeme } }, .{ .line = m.line, .col = m.col });
+            expr = try self.node(.{ .member_access = .{ .object = expr, .member = m.lexeme } }, self.endSpan(expr.span));
         } else if (self.at(.l_paren) and self.peek().line == callee_line) {
             // §5.15: ( on same line → function call
-            const s = self.span();
             _ = self.advance();
             self.skipNewlines();
             var args = std.ArrayListUnmanaged(*const Ast.Node){};
@@ -609,7 +617,7 @@ fn parseCallOrAccess(self: *Parser) Error!*const Ast.Node {
             }
             self.skipNewlines();
             _ = try self.expect(.r_paren);
-            expr = try self.node(.{ .function_call = .{ .callee = expr, .args = args.items } }, s);
+            expr = try self.node(.{ .function_call = .{ .callee = expr, .args = args.items } }, self.endSpan(expr.span));
         } else break;
     }
     return expr;
@@ -622,7 +630,7 @@ fn parseMemberAccess(self: *Parser) Error!*const Ast.Node {
         if (!self.at(.dot)) break;
         _ = self.advance();
         const m = self.advance();
-        expr = try self.node(.{ .member_access = .{ .object = expr, .member = m.lexeme } }, .{ .line = m.line, .col = m.col });
+        expr = try self.node(.{ .member_access = .{ .object = expr, .member = m.lexeme } }, self.endSpan(expr.span));
     }
     return expr;
 }
@@ -693,12 +701,13 @@ fn parsePrimary(self: *Parser) Error!*const Ast.Node {
 
 fn parseStructLiteral(self: *Parser) Error!*const Ast.Node {
     const tok = try self.expect(.l_brace);
+    const s = Ast.Span{ .line = tok.line, .col = tok.col };
     const saved = self.suppress_as;
     self.suppress_as = false;
     const fields = try self.parseBindings(.r_brace);
     _ = try self.expect(.r_brace);
     self.suppress_as = saved;
-    return self.node(.{ .struct_literal = .{ .fields = fields } }, .{ .line = tok.line, .col = tok.col });
+    return self.node(.{ .struct_literal = .{ .fields = fields } }, self.endSpan(s));
 }
 
 fn parseListLiteral(self: *Parser) Error!*const Ast.Node {
@@ -715,7 +724,7 @@ fn parseListLiteral(self: *Parser) Error!*const Ast.Node {
     }
     self.skipNewlines();
     _ = try self.expect(.r_bracket);
-    return self.node(.{ .list_literal = .{ .elements = elements.items } }, .{ .line = tok.line, .col = tok.col });
+    return self.node(.{ .list_literal = .{ .elements = elements.items } }, self.endSpan(.{ .line = tok.line, .col = tok.col }));
 }
 
 fn parseTupleOrGroup(self: *Parser) Error!*const Ast.Node {
@@ -725,7 +734,7 @@ fn parseTupleOrGroup(self: *Parser) Error!*const Ast.Node {
 
     if (self.at(.r_paren)) {
         _ = self.advance();
-        return self.node(.{ .tuple_literal = .{ .elements = &.{} } }, s);
+        return self.node(.{ .tuple_literal = .{ .elements = &.{} } }, self.endSpan(s));
     }
 
     const first = try self.parseExpression();
@@ -733,7 +742,7 @@ fn parseTupleOrGroup(self: *Parser) Error!*const Ast.Node {
 
     if (self.at(.r_paren)) {
         _ = self.advance();
-        return self.node(.{ .grouping = .{ .expr = first } }, s);
+        return self.node(.{ .grouping = .{ .expr = first } }, self.endSpan(s));
     }
 
     _ = try self.expect(.comma);
@@ -743,7 +752,7 @@ fn parseTupleOrGroup(self: *Parser) Error!*const Ast.Node {
 
     if (self.at(.r_paren)) {
         _ = self.advance();
-        return self.node(.{ .tuple_literal = .{ .elements = elements.items } }, s);
+        return self.node(.{ .tuple_literal = .{ .elements = elements.items } }, self.endSpan(s));
     }
 
     try elements.append(self.allocator, try self.parseExpression());
@@ -754,7 +763,7 @@ fn parseTupleOrGroup(self: *Parser) Error!*const Ast.Node {
     }
     self.skipNewlines();
     _ = try self.expect(.r_paren);
-    return self.node(.{ .tuple_literal = .{ .elements = elements.items } }, s);
+    return self.node(.{ .tuple_literal = .{ .elements = elements.items } }, self.endSpan(s));
 }
 
 fn parseStringLiteral(self: *Parser) Error!*const Ast.Node {
@@ -794,7 +803,7 @@ fn parseStringLiteral(self: *Parser) Error!*const Ast.Node {
         }
     }
 
-    return self.node(.{ .string_literal = .{ .parts = parts.items } }, s);
+    return self.node(.{ .string_literal = .{ .parts = parts.items } }, self.endSpan(s));
 }
 
 fn parseStringSegment(self: *Parser, parts: *std.ArrayListUnmanaged(Ast.StringPart)) Error!void {
@@ -830,7 +839,7 @@ fn parseIfExpr(self: *Parser) Error!*const Ast.Node {
     self.skipNewlines();
     _ = try self.expect(.else_);
     self.skipNewlines();
-    return self.node(.{ .if_expr = .{ .condition = cond, .then_branch = then_br, .else_branch = try self.parseExpression() } }, .{ .line = tok.line, .col = tok.col });
+    return self.node(.{ .if_expr = .{ .condition = cond, .then_branch = then_br, .else_branch = try self.parseExpression() } }, self.endSpan(.{ .line = tok.line, .col = tok.col }));
 }
 
 fn parseCaseExpr(self: *Parser) Error!*const Ast.Node {
@@ -885,7 +894,7 @@ fn parseCaseExpr(self: *Parser) Error!*const Ast.Node {
     self.skipNewlines();
     _ = try self.expect(.else_);
     self.skipNewlines();
-    return self.node(.{ .case_expr = .{ .mode = mode, .scrutinee = scrutinee, .when_clauses = when_clauses.items, .else_branch = try self.parseExpression() } }, s);
+    return self.node(.{ .case_expr = .{ .mode = mode, .scrutinee = scrutinee, .when_clauses = when_clauses.items, .else_branch = try self.parseExpression() } }, self.endSpan(s));
 }
 
 // ── Type system clauses ─────────────────────────────────────
@@ -1036,7 +1045,7 @@ fn parseFunctionExpr(self: *Parser) Error!*const Ast.Node {
     self.skipNewlines();
     _ = try self.expect(.r_brace);
 
-    return self.node(.{ .function_expr = .{ .params = params.items, .return_type = return_type, .body_bindings = body_bindings.items, .body_expr = body_expr } }, s);
+    return self.node(.{ .function_expr = .{ .params = params.items, .return_type = return_type, .body_bindings = body_bindings.items, .body_expr = body_expr } }, self.endSpan(s));
 }
 
 fn parseFunctionParam(self: *Parser) Error!Ast.FunctionParam {
@@ -1059,7 +1068,8 @@ fn parseFunctionParam(self: *Parser) Error!Ast.FunctionParam {
 fn parseStructImport(self: *Parser) Error!*const Ast.Node {
     const tok = try self.expect(.struct_);
     self.skipNewlines();
-    return self.node(.{ .struct_import = .{ .path = (try self.expect(.string)).lexeme } }, .{ .line = tok.line, .col = tok.col });
+    const path_tok = try self.expect(.string);
+    return self.node(.{ .struct_import = .{ .path = path_tok.lexeme, .path_span = .{ .line = path_tok.line, .col = path_tok.col } } }, self.endSpan(.{ .line = tok.line, .col = tok.col }));
 }
 
 // ── Type expressions ────────────────────────────────────────
