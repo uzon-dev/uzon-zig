@@ -118,7 +118,12 @@ fn runParseValidTest(allocator: std.mem.Allocator, path: []const u8) !TestResult
         ".";
     return switch (root.parseWithBaseDir(allocator, source, file_dir)) {
         .value => .pass,
-        .errors => .fail,
+        .errors => |errs| blk: {
+            if (std.process.hasEnvVarConstant("UZON_TEST_DEBUG")) {
+                for (errs) |e| std.debug.print("      {s}: {s} ({d}:{d})\n", .{ path, e.message, e.location.line, e.location.col });
+            }
+            break :blk .fail;
+        },
     };
 }
 
