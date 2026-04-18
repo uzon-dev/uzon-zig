@@ -56,8 +56,9 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) ParseResult {
 pub fn parseWithBaseDir(allocator: std.mem.Allocator, source: []const u8, base_dir: ?[]const u8) ParseResult {
     // Lex
     var lexer = Lexer.init(allocator, source);
-    const tokens = lexer.tokenize() catch
-        return singleError(allocator, UzonError.syntaxError(allocator, "out of memory", 0, 0));
+    const tokens = lexer.tokenize() catch {
+        return singleError(allocator, lexer.last_error orelse UzonError.syntaxError(allocator, "lex error", 0, 0));
+    };
 
     // Parse
     var parser = Parser.init(allocator, tokens, lexer.comment_lines.items);
@@ -93,8 +94,9 @@ pub fn parseFile(allocator: std.mem.Allocator, path: []const u8) ParseResult {
 
     // Lex
     var lexer = Lexer.init(allocator, source);
-    const tokens = lexer.tokenize() catch
-        return singleError(allocator, UzonError.syntaxError(allocator, "out of memory", 0, 0));
+    const tokens = lexer.tokenize() catch {
+        return singleError(allocator, lexer.last_error orelse UzonError.syntaxError(allocator, "lex error", 0, 0));
+    };
 
     // Parse
     var parser = Parser.init(allocator, tokens, lexer.comment_lines.items);

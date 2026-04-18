@@ -1,6 +1,7 @@
 const std = @import("std");
 const Token = @import("Token.zig");
 const err = @import("error.zig");
+const UzonError = err.UzonError;
 
 const Lexer = @This();
 
@@ -22,6 +23,8 @@ comment_lines: std.ArrayListUnmanaged(u32),
 allocator: std.mem.Allocator,
 /// Tracks the last emitted token type for context-sensitive minus.
 last_token_type: ?Token.Type,
+/// Set when the lexer encounters a syntax error.
+last_error: ?UzonError = null,
 
 pub fn init(allocator: std.mem.Allocator, source: []const u8) Lexer {
     return .{
@@ -35,7 +38,13 @@ pub fn init(allocator: std.mem.Allocator, source: []const u8) Lexer {
         .comment_lines = .{},
         .allocator = allocator,
         .last_token_type = null,
+        .last_error = null,
     };
+}
+
+fn fail(self: *Lexer, message: []const u8, line: u32, col: u32) error{UzonSyntax} {
+    self.last_error = UzonError.syntaxError(self.allocator, message, line, col);
+    return error.UzonSyntax;
 }
 
 pub fn deinit(self: *Lexer) void {
@@ -204,16 +213,13 @@ fn scanString(self: *Lexer) !void {
                 return;
             },
             '\n' => {
-                try self.emit(.string, self.source[start..self.pos], str_start_line, str_start_col);
-                _ = self.mode_stack.pop();
-                return;
+                return self.fail("unterminated string literal", str_start_line, str_start_col);
             },
             else => self.advance(),
         }
     }
 
-    try self.emit(.string, self.source[start..self.pos], str_start_line, str_start_col);
-    _ = self.mode_stack.pop();
+    return self.fail("unterminated string literal", str_start_line, str_start_col);
 }
 
 // ── Interpolation mode ───────────────────────────────────────────
@@ -593,6 +599,13 @@ fn scanKeywordEscape(self: *Lexer, line: u32, col: u32) !void {
     }
 
     const lexeme = self.source[start..self.pos];
+    // §2.4: @ MUST be immediately followed by a keyword
+    if (lexeme.len == 0) {
+        return self.fail("'@' must be immediately followed by a keyword (no space)", line, col);
+    }
+    if (Token.keywords.get(lexeme) == null) {
+        return self.fail("'@' must precede a keyword (found non-keyword identifier)", line, col);
+    }
     try self.emit(.identifier, lexeme, line, col);
 }
 
@@ -606,9 +619,11 @@ fn scanQuotedIdentifier(self: *Lexer, line: u32, col: u32) !void {
 
     const content = self.source[start..self.pos];
 
-    if (self.pos < self.source.len and self.source[self.pos] == '\'') {
-        self.advance(); // skip closing '
+    // §2.3: unmatched `'` (opening without closing on the same line) is a lexer error
+    if (self.pos >= self.source.len or self.source[self.pos] != '\'') {
+        return self.fail("unmatched quoted identifier (expected closing ')", line, col);
     }
+    self.advance(); // skip closing '
 
     // §2.3: quoted identifiers whose content matches a keyword are that keyword
     if (Token.keywords.get(content)) |kw_type| {
