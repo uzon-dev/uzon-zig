@@ -191,6 +191,35 @@ fn parseBinding(self: *Parser) Error!Ast.Binding {
         return .{ .name = name_tok.lexeme, .value = try self.node(.{ .field_extraction = .{ .source = source } }, s), .called = null, .is_are = false, .list_type_annotation = null, .span = s };
     }
 
+    // Standalone type declarations (§3.2, §3.5, §3.6, §3.7)
+    // — `is struct { ... }`, `is enum ...`, `is union ...`, `is tagged union ...`
+    if (self.at(.struct_) and self.pos + 1 < self.tokens.len and self.tokens[self.pos + 1].type == .l_brace) {
+        _ = self.advance(); // struct
+        self.skipNewlines();
+        const value = try self.parseStructLiteral();
+        return .{ .name = name_tok.lexeme, .value = value, .called = name_tok.lexeme, .is_are = false, .list_type_annotation = null, .span = s };
+    }
+    if (self.at(.enum_)) {
+        _ = self.advance();
+        self.skipNewlines();
+        const value = try self.parseStandaloneEnum(s);
+        return .{ .name = name_tok.lexeme, .value = value, .called = name_tok.lexeme, .is_are = false, .list_type_annotation = null, .span = s };
+    }
+    if (self.at(.tagged)) {
+        _ = self.advance();
+        self.skipNewlines();
+        _ = try self.expect(.union_);
+        self.skipNewlines();
+        const value = try self.parseStandaloneTaggedUnion(s);
+        return .{ .name = name_tok.lexeme, .value = value, .called = name_tok.lexeme, .is_are = false, .list_type_annotation = null, .span = s };
+    }
+    if (self.at(.union_)) {
+        _ = self.advance();
+        self.skipNewlines();
+        const value = try self.parseStandaloneUnion(s);
+        return .{ .name = name_tok.lexeme, .value = value, .called = name_tok.lexeme, .is_are = false, .list_type_annotation = null, .span = s };
+    }
+
     const value = try self.parseExpression();
     return .{ .name = name_tok.lexeme, .value = value, .called = try self.tryParseCalled(), .is_are = false, .list_type_annotation = null, .span = s };
 }
@@ -981,6 +1010,81 @@ fn parseVariantName(self: *Parser) Error![]const u8 {
         return tok.lexeme;
     }
     return self.fail("expected variant name", tok.line, tok.col);
+}
+
+// ── Standalone type declarations ────────────────────────────
+
+fn parseStandaloneEnum(self: *Parser, s: Ast.Span) Error!*const Ast.Node {
+    // `enum v1, v2, ...` — value is first variant (as an identifier)
+    var variants = std.ArrayListUnmanaged([]const u8){};
+    try variants.append(self.allocator, try self.parseVariantName());
+    while (self.commaAndNotBinding()) {
+        try variants.append(self.allocator, try self.parseVariantName());
+    }
+    if (variants.items.len == 0) return self.fail("enum must have at least one variant", s.line, s.col);
+    const first = try self.node(.{ .identifier = .{ .name = variants.items[0] } }, s);
+    return self.node(.{ .from_enum = .{ .value = first, .variants = variants.items } }, s);
+}
+
+fn parseStandaloneUnion(self: *Parser, s: Ast.Span) Error!*const Ast.Node {
+    // `union T1, T2, ...` — value is default of first type
+    var types = std.ArrayListUnmanaged(Ast.TypeExpr){};
+    try types.append(self.allocator, try self.parseTypeExpr());
+    while (self.commaAndNotBinding()) {
+        try types.append(self.allocator, try self.parseTypeExpr());
+    }
+    if (types.items.len == 0) return self.fail("union must have at least one member type", s.line, s.col);
+    const default_value = try self.defaultForTypeExpr(types.items[0], s);
+    return self.node(.{ .from_union = .{ .value = default_value, .types = types.items } }, s);
+}
+
+fn parseStandaloneTaggedUnion(self: *Parser, s: Ast.Span) Error!*const Ast.Node {
+    // `tagged union tag1 as T1, tag2 as T2, ...` — default of first variant's type tagged with first variant
+    const variants = try self.parseTaggedUnionVariants();
+    if (variants.len == 0) return self.fail("tagged union must have at least one variant", s.line, s.col);
+    const default_value = try self.defaultForTypeExpr(variants[0].type_expr, s);
+    return self.node(.{ .named_variant = .{ .value = default_value, .tag = variants[0].name, .variants = variants } }, s);
+}
+
+/// Produce an AST node representing the default value of the given type expression (§3.6 table).
+fn defaultForTypeExpr(self: *Parser, te: Ast.TypeExpr, s: Ast.Span) Error!*const Ast.Node {
+    switch (te.data) {
+        .name => |n| {
+            if (n.len >= 2 and (n[0] == 'i' or n[0] == 'u') and isAllDigits(n[1..])) {
+                return self.node(.{ .integer_literal = .{ .value = "0" } }, s);
+            }
+            if (n.len >= 2 and n[0] == 'f' and isAllDigits(n[1..])) {
+                return self.node(.{ .float_literal = .{ .value = "0.0" } }, s);
+            }
+            if (std.mem.eql(u8, n, "string")) {
+                return self.node(.{ .string_literal = .{ .parts = &.{} } }, s);
+            }
+            if (std.mem.eql(u8, n, "bool")) {
+                return self.node(.{ .bool_literal = .{ .value = false } }, s);
+            }
+            if (std.mem.eql(u8, n, "null")) {
+                return self.node(.null_literal, s);
+            }
+            // Named type — defer to evaluator via a type-annotation on identifier.
+            // Since we cannot know the default of a named user type at parse time,
+            // emit a `null` placeholder that the evaluator will adopt via `as Name`.
+            const null_node = try self.node(.null_literal, s);
+            return self.node(.{ .type_annotation = .{ .expr = null_node, .type_expr = te } }, s);
+        },
+        .null_type => return self.node(.null_literal, s),
+        .list => return self.node(.{ .list_literal = .{ .elements = &.{} } }, s),
+        .tuple => return self.node(.{ .tuple_literal = .{ .elements = &.{} } }, s),
+        .path => {
+            const null_node = try self.node(.null_literal, s);
+            return self.node(.{ .type_annotation = .{ .expr = null_node, .type_expr = te } }, s);
+        },
+    }
+}
+
+fn isAllDigits(s: []const u8) bool {
+    if (s.len == 0) return false;
+    for (s) |c| if (c < '0' or c > '9') return false;
+    return true;
 }
 
 // ── Functions ───────────────────────────────────────────────

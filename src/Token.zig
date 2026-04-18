@@ -25,6 +25,8 @@ pub const Type = enum {
     union_,
     plus,
     type_,
+    enum_,
+    tagged,
 
     // Keywords — conversion/extraction
     to,
@@ -105,6 +107,7 @@ pub const Type = enum {
     pub fn isKeyword(self: Type) bool {
         return switch (self) {
             .is, .are, .from, .called, .as, .named, .with, .union_, .plus, .type_,
+            .enum_, .tagged,
             .to, .of, .@"and", .@"or", .not, .if_, .then, .else_, .case, .when,
             .env, .struct_, .in_, .function, .returns, .default, .lazy,
             .true_, .false_, .null_, .undefined, .inf, .nan,
@@ -145,6 +148,8 @@ pub const keywords = std.StaticStringMap(Type).initComptime(.{
     .{ "union", .union_ },
     .{ "plus", .plus },
     .{ "type", .type_ },
+    .{ "enum", .enum_ },
+    .{ "tagged", .tagged },
     .{ "to", .to },
     .{ "of", .of },
     .{ "and", .@"and" },
@@ -173,7 +178,8 @@ pub const keywords = std.StaticStringMap(Type).initComptime(.{
 /// All keyword strings for case-insensitive matching.
 const keyword_strings = [_][]const u8{
     "is",        "are",       "from",     "called",  "as",       "named",
-    "with",      "union",     "plus",     "type",    "to",       "of",
+    "with",      "union",     "plus",     "type",    "enum",     "tagged",
+    "to",        "of",
     "and",       "or",        "not",      "if",      "then",     "else",
     "case",      "when",      "env",      "struct",  "in",       "function",
     "returns",   "default",   "lazy",     "true",    "false",    "null",
