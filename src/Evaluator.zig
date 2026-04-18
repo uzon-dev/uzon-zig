@@ -205,6 +205,17 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
             }
         }
 
+        // §4.1: an unannotated integer defaults to i64
+        if (value == .integer and !value.integer.explicit) {
+            if (!h.intFitsSigned(value.integer.value, 64)) {
+                self.collected_errors.append(self.allocator, UzonError.typeError(
+                    self.allocator, "integer value out of i64 range (default type)", binding.span.line, binding.span.col,
+                )) catch {};
+                had_errors = true;
+                continue;
+            }
+        }
+
         if (binding.is_are) {
             const list_val: Value = switch (value) {
                 .list => value,
@@ -231,15 +242,23 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
 
         // Register named type via `called`
         if (binding.called) |type_name| {
-            if (scope.getType(type_name) != null) {
-                self.collected_errors.append(self.allocator, UzonError.typeError(
-                    self.allocator, "duplicate type name", binding.span.line, binding.span.col,
-                )) catch {};
-                had_errors = true;
-                continue;
+            const existing = scope.getType(type_name);
+            // §3.2: when `called X` names a type already registered, both definitions MUST describe
+            // the same shape — otherwise it is a duplicate type name conflict.
+            if (existing != null) {
+                if (eval_types.buildTypeDef(self, type_name, value)) |td| {
+                    if (!eval_types.typeDefsEquivalent(existing.?, &td)) {
+                        self.collected_errors.append(self.allocator, UzonError.typeError(
+                            self.allocator, "duplicate type name", binding.span.line, binding.span.col,
+                        )) catch {};
+                        had_errors = true;
+                        continue;
+                    }
+                }
+            } else {
+                if (eval_types.buildTypeDef(self, type_name, value)) |td|
+                    try scope.defineType(type_name, td);
             }
-            if (eval_types.buildTypeDef(self, type_name, value)) |td|
-                try scope.defineType(type_name, td);
 
             if (scope.bindings.get(binding.name)) |ptr| {
                 const mutable: *Value = @constCast(ptr);
@@ -325,7 +344,7 @@ pub fn evalNode(self: *Evaluator, node: *const Ast.Node, scope: *Scope, exclude:
 // ── Literal evaluation ───────────────────────────────────────
 
 fn evalIntegerLiteral(self: *Evaluator, text: []const u8, span: Ast.Span) EvalError!Value {
-    const parsed = h.parseIntegerText(self.allocator, text) catch return self.rtErrSpan("invalid integer literal", span);
+    const parsed = h.parseIntegerText(self.allocator, text) catch return self.rtErrSpan("integer literal out of range", span);
     return Value{ .integer = .{ .value = parsed } };
 }
 
@@ -473,7 +492,12 @@ fn evalStructLiteral(self: *Evaluator, fields: []const Ast.Binding, parent_scope
 
 fn evalListLiteral(self: *Evaluator, elements: []const *const Ast.Node, scope: *Scope, exclude: ?[]const u8) EvalError!Value {
     const vals = try self.allocator.alloc(Value, elements.len);
-    for (elements, 0..) |e, i| vals[i] = try self.evalNode(e, scope, exclude);
+    for (elements, 0..) |e, i| {
+        vals[i] = try self.evalNode(e, scope, exclude);
+        // §5.4: an element that explicitly references env is a terminal context for undefined
+        if (vals[i] == .undefined and containsEnvRef(e))
+            return self.rtErrSpan("list element is undefined", e.span);
+    }
     if (vals.len == 0) return Value{ .list = .{ .elements = vals } };
 
     if (vals.len >= 2) {
@@ -498,6 +522,22 @@ fn evalListLiteral(self: *Evaluator, elements: []const *const Ast.Node, scope: *
                 if (std.mem.eql(u8, bc, "struct") and v == .struct_val)
                     if (base_idx) |bi| if (i != bi) try self.validateStructHomogeneity(vals[bi].struct_val, v.struct_val);
             }
+            // §3.4: elements with explicit numeric types must all share the same exact type
+            if (base_idx) |bi| {
+                const base = vals[bi];
+                if (base == .integer and base.integer.explicit) {
+                    for (vals) |v| {
+                        if (v == .integer and v.integer.explicit and !h.intTypesMatch(v.integer.type_ann, base.integer.type_ann))
+                            return self.typeErr("list elements have different explicit integer types", 0, 0);
+                    }
+                }
+                if (base == .float_val and base.float_val.explicit) {
+                    for (vals) |v| {
+                        if (v == .float_val and v.float_val.explicit and v.float_val.type_ann != base.float_val.type_ann)
+                            return self.typeErr("list elements have different explicit float types", 0, 0);
+                    }
+                }
+            }
             if (has_float) {
                 for (vals, 0..) |v, vi| {
                     if (v == .integer) vals[vi] = Value{ .float_val = .{ .value = @floatFromInt(v.integer.value) } };
@@ -506,6 +546,19 @@ fn evalListLiteral(self: *Evaluator, elements: []const *const Ast.Node, scope: *
         }
     }
     return Value{ .list = .{ .elements = vals } };
+}
+
+fn containsEnvRef(node: *const Ast.Node) bool {
+    return switch (node.kind) {
+        .env_ref => true,
+        .member_access => |ma| containsEnvRef(ma.object),
+        .type_annotation => |ta| containsEnvRef(ta.expr),
+        .conversion => |c| containsEnvRef(c.expr),
+        .binary_op => |bo| containsEnvRef(bo.left) or containsEnvRef(bo.right),
+        .unary_op => |uo| containsEnvRef(uo.operand),
+        .or_else => |oe| containsEnvRef(oe.left) or containsEnvRef(oe.right),
+        else => false,
+    };
 }
 
 fn validateStructHomogeneity(self: *Evaluator, base: val.Struct, other: val.Struct) EvalError!void {

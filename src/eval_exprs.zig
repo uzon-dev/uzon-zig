@@ -645,7 +645,53 @@ pub fn evalFieldExtraction(self: *Evaluator, source_node: *const Ast.Node, scope
 
 // ── Function expressions ─────────────────────────────────────
 
+fn defaultReferencesParam(node: *const Ast.Node, params: []const Ast.FunctionParam) bool {
+    return switch (node.kind) {
+        .identifier => |id| blk: {
+            for (params) |p| if (std.mem.eql(u8, p.name, id.name)) break :blk true;
+            break :blk false;
+        },
+        .member_access => |ma| defaultReferencesParam(ma.object, params),
+        .type_annotation => |ta| defaultReferencesParam(ta.expr, params),
+        .conversion => |c| defaultReferencesParam(c.expr, params),
+        .binary_op => |bo| defaultReferencesParam(bo.left, params) or defaultReferencesParam(bo.right, params),
+        .unary_op => |uo| defaultReferencesParam(uo.operand, params),
+        .or_else => |oe| defaultReferencesParam(oe.left, params) or defaultReferencesParam(oe.right, params),
+        .if_expr => |ie| defaultReferencesParam(ie.condition, params) or defaultReferencesParam(ie.then_branch, params) or defaultReferencesParam(ie.else_branch, params),
+        .list_literal => |ll| blk: {
+            for (ll.elements) |e| if (defaultReferencesParam(e, params)) break :blk true;
+            break :blk false;
+        },
+        .tuple_literal => |tl| blk: {
+            for (tl.elements) |e| if (defaultReferencesParam(e, params)) break :blk true;
+            break :blk false;
+        },
+        .function_call => |fc| blk: {
+            if (defaultReferencesParam(fc.callee, params)) break :blk true;
+            for (fc.args) |a| if (defaultReferencesParam(a, params)) break :blk true;
+            break :blk false;
+        },
+        else => false,
+    };
+}
+
 pub fn evalFunctionExpr(self: *Evaluator, params: []const Ast.FunctionParam, return_type: Ast.TypeExpr, body_bindings: []const Ast.Binding, body_expr: *const Ast.Node, scope: *Scope) EvalError!Value {
+    // §3.8: validate default values at function-definition time.
+    for (params) |p| if (p.default) |dn| {
+        // Defaults must not reference any parameter of the same function.
+        if (defaultReferencesParam(dn, params))
+            return self.typeErrSpan("default value cannot reference another parameter", dn.span);
+        const def_val = try self.evalNode(dn, scope, null);
+        if (def_val.isUndefined())
+            return self.typeErrSpan("default value is undefined", dn.span);
+        if (p.type_expr.data == .name) {
+            const tn = p.type_expr.data.name;
+            const adopted = h.adoptToType(def_val, tn);
+            if (!h.valueMatchesType(adopted, tn))
+                return self.typeErrSpan("default value type does not match parameter type", dn.span);
+        }
+    };
+
     // Walk scope chain outermost-first, inner shadows outer
     var scope_chain = std.ArrayListUnmanaged(*const Scope){};
     var cur: ?*const Scope = scope;
@@ -783,12 +829,46 @@ pub fn evalFunctionCall(self: *Evaluator, callee_node: *const Ast.Node, arg_node
         if (!result.isNull() and !result.isUndefined()) {
             result = h.adoptToType(result, rtn);
             if (!h.valueMatchesType(result, rtn)) {
+                // §3.9: structural conformance for function types
+                if (result == .function) {
+                    if (func_scope.getType(rtn)) |td| {
+                        if (td.kind == .function_type and functionMatchesType(result.function, td.kind.function_type)) {
+                            result = Value{ .function = .{
+                                .params = result.function.params,
+                                .return_type = result.function.return_type,
+                                .body_bindings = result.function.body_bindings,
+                                .body_expr = result.function.body_expr,
+                                .captured_keys = result.function.captured_keys,
+                                .captured_values = result.function.captured_values,
+                                .captured_types = result.function.captured_types,
+                                .type_name = rtn,
+                            } };
+                            return result;
+                        }
+                    }
+                }
                 const body_span = func.body_expr.span;
                 return self.typeErrSpan("function return type mismatch", body_span);
             }
         }
     }
     return result;
+}
+
+fn functionMatchesType(f: val.Function, ft: anytype) bool {
+    if (f.params.len != ft.param_types.len) return false;
+    for (f.params, ft.param_types) |p, expected| {
+        const actual = switch (p.type_expr.data) {
+            .name => |n| n,
+            else => return false,
+        };
+        if (!std.mem.eql(u8, actual, expected)) return false;
+    }
+    const actual_ret = switch (f.return_type.data) {
+        .name => |n| n,
+        else => return false,
+    };
+    return std.mem.eql(u8, actual_ret, ft.return_type);
 }
 
 // ── File import ──────────────────────────────────────────────

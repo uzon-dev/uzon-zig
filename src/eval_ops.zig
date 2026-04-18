@@ -186,6 +186,9 @@ fn floatArithmetic(self: *Evaluator, op: Ast.BinaryOp, left: Float, right: Float
         return self.typeErrSpan("float type mismatch in arithmetic", span);
 
     const rt = h.adoptFloatType(left, right);
+    // §5.3: negative base with non-integer exponent is a runtime error
+    if (op == .pow and left.value < 0 and @floor(right.value) != right.value)
+        return self.rtErrSpan("negative base with non-integer exponent", span);
     const result: f64 = switch (op) {
         .add => left.value + right.value,
         .sub => left.value - right.value,
@@ -440,7 +443,22 @@ fn evalLogical(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *con
 
 pub fn evalOrElse(self: *Evaluator, ln: *const Ast.Node, rn: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
     const left = try self.evalNode(ln, scope, exclude);
-    if (left.isUndefined()) return try self.evalNode(rn, scope, exclude);
+    if (left.isUndefined()) {
+        const right = try self.evalNode(rn, scope, exclude);
+        // §5.7: right operand must match left's static type category when left has one.
+        if (!right.isUndefined()) {
+            if (staticCategoryOf(ln)) |cat| {
+                if (valueCategory(right)) |rcat| {
+                    if (!std.mem.eql(u8, cat, rcat)) {
+                        const numeric_mix = (std.mem.eql(u8, cat, "integer") and std.mem.eql(u8, rcat, "float")) or
+                            (std.mem.eql(u8, cat, "float") and std.mem.eql(u8, rcat, "integer"));
+                        if (!numeric_mix) return self.typeErrSpan("'or else' operands must be the same type", span);
+                    }
+                }
+            }
+        }
+        return right;
+    }
     const right = self.evalNode(rn, scope, exclude) catch |e| switch (e) {
         error.UzonRuntime => return left,
         else => return e,
@@ -448,6 +466,49 @@ pub fn evalOrElse(self: *Evaluator, ln: *const Ast.Node, rn: *const Ast.Node, sc
     if (!left.isNull() and !right.isNull() and !h.branchTypesCompatible(left, right))
         return self.typeErrSpan("'or else' operands must be the same type", span);
     return left;
+}
+
+fn staticCategoryOf(node: *const Ast.Node) ?[]const u8 {
+    return switch (node.kind) {
+        .conversion => |cv| typeExprCategory(&cv.type_expr),
+        .type_annotation => |ta| typeExprCategory(&ta.type_expr),
+        .string_literal => "string",
+        .integer_literal => "integer",
+        .float_literal, .inf_literal, .nan_literal => "float",
+        .bool_literal => "bool",
+        .or_else => |oe| staticCategoryOf(oe.left) orelse staticCategoryOf(oe.right),
+        .binary_op => |bo| staticCategoryOf(bo.left) orelse staticCategoryOf(bo.right),
+        else => null,
+    };
+}
+
+fn typeExprCategory(te: *const Ast.TypeExpr) ?[]const u8 {
+    return switch (te.data) {
+        .name => |n| blk: {
+            if (h.parseIntegerTypeName(n) != null) break :blk "integer";
+            if (h.parseFloatTypeName(n) != null) break :blk "float";
+            if (std.mem.eql(u8, n, "string")) break :blk "string";
+            if (std.mem.eql(u8, n, "bool")) break :blk "bool";
+            break :blk null;
+        },
+        .list => "list",
+        .tuple => "tuple",
+        else => null,
+    };
+}
+
+fn valueCategory(v: Value) ?[]const u8 {
+    return switch (v) {
+        .integer => "integer",
+        .float_val => "float",
+        .string => "string",
+        .bool_val => "bool",
+        .list => "list",
+        .tuple => "tuple",
+        .struct_val => "struct",
+        .enum_val => "enum",
+        else => null,
+    };
 }
 
 // ── Unary operations ─────────────────────────────────────────

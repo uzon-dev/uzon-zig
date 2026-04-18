@@ -215,6 +215,9 @@ fn stampNamedType(self: *Evaluator, expr_node: *const Ast.Node, td: *const val.T
     var result = value;
     switch (result) {
         .enum_val => |e| {
+            // §3.2: nominal identity — already-named enum cannot be re-cast to a different named type.
+            if (e.type_name) |existing| if (!std.mem.eql(u8, existing, type_name))
+                return self.typeErr("nominal type mismatch: value has a different named type", span.line, span.col);
             if (td.kind == .enum_type) {
                 const et = td.kind.enum_type;
                 var found = false;
@@ -226,9 +229,19 @@ fn stampNamedType(self: *Evaluator, expr_node: *const Ast.Node, td: *const val.T
                 result = Value{ .enum_val = .{ .value = e.value, .variants = et.variants, .type_name = type_name } };
             }
         },
-        .tagged_union => |tu| result = Value{ .tagged_union = .{ .value = tu.value, .tag = tu.tag, .variants = tu.variants, .type_name = type_name } },
-        .union_val => |u| result = Value{ .union_val = .{ .value = u.value, .types = u.types, .type_name = type_name } },
+        .tagged_union => |tu| {
+            if (tu.type_name) |existing| if (!std.mem.eql(u8, existing, type_name))
+                return self.typeErr("nominal type mismatch: value has a different named type", span.line, span.col);
+            result = Value{ .tagged_union = .{ .value = tu.value, .tag = tu.tag, .variants = tu.variants, .type_name = type_name } };
+        },
+        .union_val => |u| {
+            if (u.type_name) |existing| if (!std.mem.eql(u8, existing, type_name))
+                return self.typeErr("nominal type mismatch: value has a different named type", span.line, span.col);
+            result = Value{ .union_val = .{ .value = u.value, .types = u.types, .type_name = type_name } };
+        },
         .struct_val => |s| {
+            if (s.type_name) |existing| if (!std.mem.eql(u8, existing, type_name))
+                return self.typeErr("nominal type mismatch: value has a different named type", span.line, span.col);
             var final_values = s.values;
             if (td.kind == .struct_type) {
                 const st = td.kind.struct_type;
@@ -287,6 +300,7 @@ pub fn evalConversion(self: *Evaluator, expr_node: *const Ast.Node, type_expr: *
         .name => |n| n,
         .path => |segments| resolvePathTypeName(self, segments, type_expr.*, scope) orelse
             return self.typeErr("unknown type in conversion", span.line, span.col),
+        .list => |inner| return convertList(self, value, inner, scope, span),
         else => return self.typeErr("complex type conversions not yet supported", span.line, span.col),
     };
 
@@ -315,6 +329,36 @@ pub fn evalConversion(self: *Evaluator, expr_node: *const Ast.Node, type_expr: *
         };
     }
     return self.typeErr("unknown conversion target type", span.line, span.col);
+}
+
+fn convertList(self: *Evaluator, value: Value, inner: *const Ast.TypeExpr, scope: *Scope, span: Ast.Span) EvalError!Value {
+    if (value.isUndefined()) return .undefined;
+    if (value != .list) return self.typeErr("cannot convert non-list to list type", span.line, span.col);
+
+    const inner_name = switch (inner.data) {
+        .name => |n| n,
+        .path => |segments| resolvePathTypeName(self, segments, inner.*, scope) orelse
+            return self.typeErr("unknown type in list conversion", span.line, span.col),
+        else => return self.typeErr("complex list element conversions not yet supported", span.line, span.col),
+    };
+
+    const new_elems = try self.allocator.alloc(Value, value.list.elements.len);
+    for (value.list.elements, 0..) |elem, i| {
+        if (elem.isUndefined()) {
+            new_elems[i] = elem;
+            continue;
+        }
+        if (h.parseIntegerTypeName(inner_name)) |it| {
+            new_elems[i] = try convertToInteger(self, elem, it, span);
+        } else if (h.parseFloatTypeName(inner_name)) |ft| {
+            new_elems[i] = try convertToFloat(self, elem, ft, span);
+        } else if (std.mem.eql(u8, inner_name, "string")) {
+            new_elems[i] = try convertToString(self, elem, span);
+        } else {
+            return self.typeErr("unsupported element type in list conversion", span.line, span.col);
+        }
+    }
+    return Value{ .list = .{ .elements = new_elems, .element_type = inner_name } };
 }
 
 fn convertToInteger(self: *Evaluator, value: Value, int_type: val.IntegerType, span: Ast.Span) EvalError!Value {
@@ -416,6 +460,60 @@ pub fn typeExprToString(self: *Evaluator, te: Ast.TypeExpr) !?[]const u8 {
 }
 
 /// Build a TypeDef from a value and its `called` name.
+pub fn typeDefsEquivalent(a: *const val.TypeDef, b: *const val.TypeDef) bool {
+    if (std.meta.activeTag(a.kind) != std.meta.activeTag(b.kind)) return false;
+    return switch (a.kind) {
+        .enum_type => |ae| blk: {
+            const be = b.kind.enum_type;
+            if (ae.variants.len != be.variants.len) break :blk false;
+            for (ae.variants, be.variants) |av, bv|
+                if (!std.mem.eql(u8, av, bv)) break :blk false;
+            break :blk true;
+        },
+        .union_type => |au| blk: {
+            const bu = b.kind.union_type;
+            if (au.types.len != bu.types.len) break :blk false;
+            for (au.types, bu.types) |at, bt|
+                if (!std.mem.eql(u8, at, bt)) break :blk false;
+            break :blk true;
+        },
+        .tagged_union_type => |atu| blk: {
+            const btu = b.kind.tagged_union_type;
+            if (atu.variants.len != btu.variants.len) break :blk false;
+            for (atu.variants, btu.variants) |av, bv| {
+                if (!std.mem.eql(u8, av.name, bv.name)) break :blk false;
+                const aname = av.type_name orelse "";
+                const bname = bv.type_name orelse "";
+                if (!std.mem.eql(u8, aname, bname)) break :blk false;
+            }
+            break :blk true;
+        },
+        .struct_type => |as_| blk: {
+            const bs = b.kind.struct_type;
+            if (as_.fields.len != bs.fields.len) break :blk false;
+            for (as_.fields, bs.fields) |af, bf| {
+                if (!std.mem.eql(u8, af.name, bf.name)) break :blk false;
+                if (!std.mem.eql(u8, af.type_category, bf.type_category)) break :blk false;
+            }
+            break :blk true;
+        },
+        .function_type => |af| blk: {
+            const bf = b.kind.function_type;
+            if (af.param_types.len != bf.param_types.len) break :blk false;
+            for (af.param_types, bf.param_types) |at, bt|
+                if (!std.mem.eql(u8, at, bt)) break :blk false;
+            if (!std.mem.eql(u8, af.return_type, bf.return_type)) break :blk false;
+            break :blk true;
+        },
+        .list_type => |al| blk: {
+            const bl = b.kind.list_type;
+            const a_et = al.element_type orelse "";
+            const b_et = bl.element_type orelse "";
+            break :blk std.mem.eql(u8, a_et, b_et);
+        },
+    };
+}
+
 pub fn buildTypeDef(self: *Evaluator, name: []const u8, value: Value) ?val.TypeDef {
     return switch (value) {
         .enum_val => |e| val.TypeDef{ .name = name, .kind = .{ .enum_type = .{ .variants = e.variants } } },

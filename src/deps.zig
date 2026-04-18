@@ -31,8 +31,16 @@ pub fn topologicalSort(
     for (bindings, 0..) |b, i| {
         var deps = std.AutoHashMapUnmanaged(usize, void){};
         collectBindingDeps(allocator, b.value, &name_to_idx, &deps);
-        collectTypeAnnotationDeps(allocator, b.value, &called_to_idx, &deps);
-        if (b.list_type_annotation) |lta| collectTypeExprDeps(allocator, &lta, &called_to_idx, &deps);
+        var type_deps = std.AutoHashMapUnmanaged(usize, void){};
+        collectTypeAnnotationDeps(allocator, b.value, &called_to_idx, &type_deps);
+        if (b.list_type_annotation) |lta| collectTypeExprDeps(allocator, &lta, &called_to_idx, &type_deps);
+        // §6: a binding that names a type and references itself in a type annotation is recursive — forbidden.
+        if (type_deps.contains(i)) {
+            try cycle_indices.append(allocator, i);
+            return error.UzonCircular;
+        }
+        var td_it = type_deps.keyIterator();
+        while (td_it.next()) |k| deps.put(allocator, k.*, {}) catch {};
         _ = deps.remove(i); // self-exclusion
         _ = scope; // scope reserved for outer-scope filtering
 

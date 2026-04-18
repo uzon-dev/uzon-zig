@@ -482,6 +482,8 @@ fn stdMap(self: *Evaluator, args: []const Value, arg_spans: []const Ast.Span, sp
         .function => |f| f,
         else => return self.typeErrSpan("std.map requires function as second argument", s1),
     };
+    if (func.params.len != 1)
+        return self.typeErrSpan("std.map requires a 1-parameter function", s1);
     const elems = try self.allocator.alloc(Value, l.elements.len);
     for (l.elements, 0..) |elem, i| {
         elems[i] = try callFunction(self, func, &.{elem}, s1, span);
