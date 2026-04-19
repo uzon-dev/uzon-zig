@@ -562,6 +562,27 @@ pub fn evalFromUnion(self: *Evaluator, value_node: *const Ast.Node, types: []con
 }
 
 pub fn evalNamedVariant(self: *Evaluator, value_node: *const Ast.Node, tag: []const u8, variants: []const Ast.VariantDef, scope: *Scope, exclude: ?[]const u8) EvalError!Value {
+    // §3.7.1: For `expr as T named Variant` where T is a named tagged union,
+    // evaluate `expr` alone (don't stamp it as T — that would reject a tagged
+    // union value whose type_name differs). Then wrap with T's variants.
+    if (variants.len == 0 and value_node.kind == .type_annotation) {
+        const ta = value_node.kind.type_annotation;
+        if (ta.type_expr.data == .name) {
+            const tn = ta.type_expr.data.name;
+            if (scope.getType(tn)) |td| {
+                if (td.kind == .tagged_union_type) {
+                    const tut = td.kind.tagged_union_type;
+                    if (!h.isValidVariantTag(tut.variants, tag))
+                        return self.typeErrSpan("unknown variant name in tagged union type reuse", value_node.span);
+                    const inner_value = try self.evalNode(ta.expr, scope, exclude);
+                    const vp = try self.allocator.create(Value);
+                    vp.* = inner_value;
+                    return Value{ .tagged_union = .{ .value = vp, .tag = tag, .variants = tut.variants, .type_name = tn } };
+                }
+            }
+        }
+    }
+
     const value = try self.evalNode(value_node, scope, exclude);
 
     // Type reuse: empty variants list
