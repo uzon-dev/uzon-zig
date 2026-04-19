@@ -49,7 +49,12 @@ fn runEvalTest(allocator: std.mem.Allocator, dir_path: []const u8, filename: []c
 
     const result = switch (root.parseWithBaseDir(allocator, input_source, dir_path)) {
         .value => |v| v,
-        .errors => return .fail,
+        .errors => |errs| {
+            if (std.process.hasEnvVarConstant("UZON_TEST_DEBUG")) {
+                for (errs) |e| std.debug.print("    {s}: {s} ({d}:{d})\n", .{ filename, e.message, e.location.line, e.location.col });
+            }
+            return .fail;
+        },
     };
     const expected = switch (root.parseWithBaseDir(allocator, expected_source, dir_path)) {
         .value => |v| v,
@@ -61,7 +66,12 @@ fn runEvalTest(allocator: std.mem.Allocator, dir_path: []const u8, filename: []c
     if (result == .struct_val and expected == .struct_val) {
         for (expected.struct_val.keys, expected.struct_val.values) |ek, ev| {
             const rv = result.struct_val.get(ek) orelse return .fail;
-            if (!h.valuesEqual(rv, ev)) return .fail;
+            if (!h.valuesEqual(rv, ev)) {
+                if (std.process.hasEnvVarConstant("UZON_TEST_DEBUG")) {
+                    std.debug.print("    {s}: key '{s}' mismatch\n", .{ filename, ek });
+                }
+                return .fail;
+            }
         }
         return .pass;
     }

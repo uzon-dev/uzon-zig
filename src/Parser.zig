@@ -1102,7 +1102,12 @@ fn defaultForTypeExpr(self: *Parser, te: Ast.TypeExpr, s: Ast.Span) Error!*const
         },
         .null_type => return self.node(.null_literal, s),
         .list => return self.node(.{ .list_literal = .{ .elements = &.{} } }, s),
-        .tuple => return self.node(.{ .tuple_literal = .{ .elements = &.{} } }, s),
+        .tuple => |elems| {
+            // §3.6: default of a tuple type is a tuple of each element's default.
+            const out = try self.allocator.alloc(*const Ast.Node, elems.len);
+            for (elems, 0..) |et, i| out[i] = try self.defaultForTypeExpr(et, s);
+            return self.node(.{ .tuple_literal = .{ .elements = out } }, s);
+        },
         .path => {
             const null_node = try self.node(.null_literal, s);
             return self.node(.{ .type_annotation = .{ .expr = null_node, .type_expr = te } }, s);

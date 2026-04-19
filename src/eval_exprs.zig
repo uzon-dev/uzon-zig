@@ -297,7 +297,15 @@ fn adoptToTypeExpr(allocator: std.mem.Allocator, v: Value, te: Ast.TypeExpr) Val
             for (l.elements, 0..) |elem, i| {
                 new_elements[i] = adoptToTypeExpr(allocator, elem, inner.*);
             }
-            break :blk Value{ .list = .{ .elements = new_elements, .element_type = l.element_type } };
+            // §3.6: for an empty list, stamp the element_type from the target
+            // so that valueMatchesTypeExpr can confirm the match.
+            const elem_type: ?[]const u8 = if (l.elements.len == 0) blk2: {
+                break :blk2 switch (inner.data) {
+                    .name => |n| n,
+                    else => l.element_type,
+                };
+            } else l.element_type;
+            break :blk Value{ .list = .{ .elements = new_elements, .element_type = elem_type } };
         },
         .tuple => |types| blk: {
             if (v != .tuple) break :blk v;

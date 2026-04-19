@@ -16,6 +16,56 @@ pub fn isBuiltinTypeName(name: []const u8) bool {
     return false;
 }
 
+/// §3.6 default table: compute the default value of a named type. Used when the
+/// parser emits a `null as T` placeholder that must resolve to T's default.
+pub fn computeNamedDefault(self: *Evaluator, type_name: []const u8, scope: *Scope, span: Ast.Span) EvalError!Value {
+    if (h.parseIntegerTypeName(type_name)) |t| return Value{ .integer = .{ .value = 0, .type_ann = t, .explicit = true } };
+    if (h.parseFloatTypeName(type_name)) |t| return Value{ .float_val = .{ .value = 0.0, .type_ann = t, .explicit = true } };
+    if (std.mem.eql(u8, type_name, "string")) return Value.str("");
+    if (std.mem.eql(u8, type_name, "bool")) return Value.boolean(false);
+    if (std.mem.eql(u8, type_name, "null")) return .null_val;
+    if (scope.getType(type_name)) |td| {
+        switch (td.kind) {
+            .enum_type => |et| {
+                if (et.variants.len == 0) return self.typeErrSpan("enum has no variants", span);
+                return Value{ .enum_val = .{ .value = et.variants[0], .variants = et.variants, .type_name = type_name } };
+            },
+            .union_type => |ut| {
+                if (ut.types.len == 0) return self.typeErrSpan("union has no member types", span);
+                var has_null = false;
+                for (ut.types) |m| if (std.mem.eql(u8, m, "null")) {
+                    has_null = true;
+                    break;
+                };
+                const inner: Value = if (has_null) .null_val else try computeNamedDefault(self, ut.types[0], scope, span);
+                const vp = try self.allocator.create(Value);
+                vp.* = inner;
+                return Value{ .union_val = .{ .value = vp, .types = ut.types, .type_name = type_name } };
+            },
+            .tagged_union_type => |tut| {
+                if (tut.variants.len == 0) return self.typeErrSpan("tagged union has no variants", span);
+                const first = tut.variants[0];
+                const inner_val: Value = if (first.type_name) |tn| try computeNamedDefault(self, tn, scope, span) else .null_val;
+                const vp = try self.allocator.create(Value);
+                vp.* = inner_val;
+                return Value{ .tagged_union = .{ .value = vp, .tag = first.name, .variants = tut.variants, .type_name = type_name } };
+            },
+            .struct_type => |st| {
+                const keys = try self.allocator.alloc([]const u8, st.fields.len);
+                const values = try self.allocator.alloc(Value, st.fields.len);
+                for (st.fields, 0..) |f, i| {
+                    keys[i] = f.name;
+                    values[i] = f.default;
+                }
+                return Value{ .struct_val = .{ .keys = keys, .values = values, .type_name = type_name } };
+            },
+            .list_type => |lt| return Value{ .list = .{ .elements = &.{}, .element_type = lt.element_type, .type_name = type_name } },
+            .function_type => return self.typeErrSpan("cannot default-construct function type", span),
+        }
+    }
+    return self.typeErrSpan("unknown type in default computation", span);
+}
+
 // ── Type annotation (`as`) ───────────────────────────────────
 
 pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_expr: *const Ast.TypeExpr, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
@@ -137,7 +187,15 @@ pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_exp
                         has_null = true;
                         break;
                     };
-                    if (!has_null) return self.typeErr("cannot annotate null as named union without 'null' member", span.line, span.col);
+                    // §3.6: if the union has no null member, `null as U` is the
+                    // parser's default-placeholder for default-of-U — recursively
+                    // compute the default from the first member.
+                    if (!has_null) {
+                        const inner = try computeNamedDefault(self, ut.types[0], scope, span);
+                        const vp = try self.allocator.create(Value);
+                        vp.* = inner;
+                        return Value{ .union_val = .{ .value = vp, .types = ut.types, .type_name = type_name } };
+                    }
                 },
                 .function_type, .list_type => return self.typeErr("cannot annotate null as this type", span.line, span.col),
                 .tagged_union_type => {},
