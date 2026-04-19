@@ -20,9 +20,19 @@ pub fn evalIfExpr(self: *Evaluator, cond_node: *const Ast.Node, then_node: *cons
     const cond = try self.evalNode(cond_node, scope, exclude);
     switch (cond) {
         .bool_val => |bv| {
+            // §5.9 R8: symmetric narrowing for `is [not] type T` / `is [not] named V`.
+            var then_ns: Scope = undefined;
+            var else_ns: Scope = undefined;
+            var then_scope: *Scope = scope;
+            var else_scope: *Scope = scope;
+            if (buildIfNarrowedScopes(self, cond_node, scope, &then_ns, &else_ns)) {
+                then_scope = &then_ns;
+                else_scope = &else_ns;
+            }
+
             if (bv) {
-                const result = try self.evalNode(then_node, scope, exclude);
-                const else_val = self.evalNode(else_node, scope, exclude) catch |e| switch (e) {
+                const result = try self.evalNode(then_node, then_scope, exclude);
+                const else_val = self.evalNode(else_node, else_scope, exclude) catch |e| switch (e) {
                     error.UzonRuntime => return result,
                     else => return e,
                 };
@@ -30,17 +40,102 @@ pub fn evalIfExpr(self: *Evaluator, cond_node: *const Ast.Node, then_node: *cons
                     return self.typeErrSpan("if/else branches have incompatible types", span);
                 return result;
             } else {
-                const then_val = self.evalNode(then_node, scope, exclude) catch |e| switch (e) {
-                    error.UzonRuntime => return try self.evalNode(else_node, scope, exclude),
+                const then_val = self.evalNode(then_node, then_scope, exclude) catch |e| switch (e) {
+                    error.UzonRuntime => return try self.evalNode(else_node, else_scope, exclude),
                     else => return e,
                 };
-                const result = try self.evalNode(else_node, scope, exclude);
+                const result = try self.evalNode(else_node, else_scope, exclude);
                 if (!h.branchTypesCompatible(then_val, result))
                     return self.typeErrSpan("if/else branches have incompatible types", span);
                 return result;
             }
         },
         else => return self.typeErrSug("if condition must be bool", "compare explicitly, e.g. 'if x > 0 then ...'", span.line, span.col),
+    }
+}
+
+/// §5.9 R8: build symmetric narrowed scopes for `if x is [not] type T` and
+/// `if x is [not] named V`. Returns true if a narrowing pattern matched.
+fn buildIfNarrowedScopes(self: *Evaluator, cond_node: *const Ast.Node, scope: *Scope, then_ns: *Scope, else_ns: *Scope) bool {
+    if (cond_node.kind != .binary_op) return false;
+    const bo = cond_node.kind.binary_op;
+    const is_type = bo.op == .is_type or bo.op == .is_not_type;
+    const is_name = bo.op == .is_named or bo.op == .is_not_named;
+    if (!is_type and !is_name) return false;
+    if (bo.left.kind != .identifier) return false;
+    if (bo.right.kind != .identifier) return false;
+    const sc_name = bo.left.kind.identifier.name;
+    const target = bo.right.kind.identifier.name;
+    const sc_val_ptr = scope.get(sc_name, null) orelse return false;
+    const sc_val = sc_val_ptr.*;
+    const then_positive = (bo.op == .is_type or bo.op == .is_named);
+    then_ns.* = Scope.withParent(self.allocator, scope);
+    else_ns.* = Scope.withParent(self.allocator, scope);
+    if (is_type) {
+        narrowByType(then_ns, sc_name, sc_val, target, then_positive);
+        narrowByType(else_ns, sc_name, sc_val, target, !then_positive);
+    } else {
+        narrowByName(then_ns, sc_name, sc_val, target, then_positive);
+        narrowByName(else_ns, sc_name, sc_val, target, !then_positive);
+    }
+    return true;
+}
+
+fn narrowByType(child: *Scope, sc_name: []const u8, sc_val: Value, type_name: []const u8, positive: bool) void {
+    const inner = sc_val.unwrapTransparent();
+    if (positive) {
+        const adopted = h.adoptToType(inner, type_name);
+        const narrowed = if (h.valueMatchesType(adopted, type_name)) adopted else h.defaultValueForType(type_name);
+        child.define(sc_name, narrowed) catch {};
+        return;
+    }
+    // Negative narrowing: only unwrap when exactly one non-T union member remains.
+    if (sc_val != .union_val) return;
+    var non_t_count: usize = 0;
+    var only_non_t: ?[]const u8 = null;
+    for (sc_val.union_val.types) |t| {
+        if (std.mem.eql(u8, t, type_name)) continue;
+        non_t_count += 1;
+        only_non_t = t;
+    }
+    if (non_t_count != 1) return;
+    const t = only_non_t.?;
+    const adopted = h.adoptToType(inner, t);
+    const narrowed = if (h.valueMatchesType(adopted, t)) adopted else h.defaultValueForType(t);
+    child.define(sc_name, narrowed) catch {};
+}
+
+fn narrowByName(child: *Scope, sc_name: []const u8, sc_val: Value, variant_name: []const u8, positive: bool) void {
+    if (sc_val != .tagged_union) return;
+    const tu = sc_val.tagged_union;
+    const tag_matches = std.mem.eql(u8, tu.tag, variant_name);
+    if (positive) {
+        if (tag_matches) {
+            child.define(sc_name, tu.value.*) catch {};
+        } else {
+            for (tu.variants) |v| if (std.mem.eql(u8, v.name, variant_name)) {
+                const def = if (v.type_name) |tn| h.defaultValueForType(tn) else Value.null_val;
+                child.define(sc_name, def) catch {};
+                return;
+            };
+        }
+        return;
+    }
+    // Negative narrowing: only unwrap when exactly one non-V variant remains.
+    var non_v_count: usize = 0;
+    var only_non_v_idx: ?usize = null;
+    for (tu.variants, 0..) |v, i| {
+        if (std.mem.eql(u8, v.name, variant_name)) continue;
+        non_v_count += 1;
+        only_non_v_idx = i;
+    }
+    if (non_v_count != 1) return;
+    const single = tu.variants[only_non_v_idx.?];
+    if (!tag_matches) {
+        child.define(sc_name, tu.value.*) catch {};
+    } else {
+        const def = if (single.type_name) |tn| h.defaultValueForType(tn) else Value.null_val;
+        child.define(sc_name, def) catch {};
     }
 }
 
