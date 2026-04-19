@@ -476,7 +476,14 @@ pub fn resolveShorthandAgainstType(self: *Evaluator, sentinel: Value, td: *const
                         adopted = Value{ .struct_val = .{ .keys = adopted.struct_val.keys, .values = adopted.struct_val.values, .type_name = vtn } };
                     if (adopted == .function and adopted.function.type_name == null)
                         adopted = Value{ .function = .{ .params = adopted.function.params, .return_type = adopted.function.return_type, .body_bindings = adopted.function.body_bindings, .body_expr = adopted.function.body_expr, .captured_keys = adopted.function.captured_keys, .captured_values = adopted.function.captured_values, .captured_types = adopted.function.captured_types, .type_name = vtn } };
-                    if (!h.valueMatchesType(adopted, vtn))
+                    // For compound inner types (tuple "(...)", list "[...]"), accept by shape.
+                    const is_compound_type = vtn.len > 0 and (vtn[0] == '(' or vtn[0] == '[');
+                    const matches_compound = is_compound_type and switch (adopted) {
+                        .tuple => vtn[0] == '(',
+                        .list => vtn[0] == '[',
+                        else => false,
+                    };
+                    if (!matches_compound and !h.valueMatchesType(adopted, vtn))
                         return self.typeErrSpan("variant shorthand inner value does not match variant's declared type", span);
                 }
             }
@@ -826,6 +833,56 @@ pub fn evalFunctionCall(self: *Evaluator, callee_node: *const Ast.Node, arg_node
             return @import("stdlib.zig").evalStdlibCall(self, ma.member, arg_nodes, scope, exclude, span);
     }
 
+    // §3.7 v0.10: if the callee is an identifier that isn't a bound function but IS a
+    // tagged-union variant name (in some scope-visible tagged union), reinterpret the
+    // "call" as a variant_shorthand — the args tuple becomes the inner primary.
+    if (callee_node.kind == .identifier) {
+        const id_name = callee_node.kind.identifier.name;
+        if (scope.get(id_name, null) == null) {
+            // Search scope chain for tagged union types whose variants include this name.
+            var s: ?*const Scope = scope;
+            var match_found = false;
+            while (s) |sc| {
+                var it = sc.types.iterator();
+                while (it.next()) |entry| {
+                    const td = entry.value_ptr.*;
+                    if (td.kind == .tagged_union_type) {
+                        for (td.kind.tagged_union_type.variants) |v| if (std.mem.eql(u8, v.name, id_name)) {
+                            match_found = true;
+                            break;
+                        };
+                    }
+                    if (match_found) break;
+                }
+                if (match_found) break;
+                s = sc.parent;
+            }
+            if (match_found) {
+                const inner_val: Value = if (arg_nodes.len == 1) blk: {
+                    break :blk self.evalNode(arg_nodes[0], scope, exclude) catch blk2: {
+                        self.last_error = null;
+                        break :blk2 .undefined;
+                    };
+                } else blk: {
+                    const vals = try self.allocator.alloc(Value, arg_nodes.len);
+                    for (arg_nodes, 0..) |an, i| {
+                        vals[i] = self.evalNode(an, scope, exclude) catch blk2: {
+                            self.last_error = null;
+                            break :blk2 .undefined;
+                        };
+                    }
+                    break :blk Value{ .tuple = .{ .elements = vals } };
+                };
+                const vp = try self.allocator.create(Value);
+                vp.* = inner_val;
+                if (arg_nodes.len == 1) {
+                    self.shorthand_inner_ast.put(self.allocator, @intFromPtr(vp), arg_nodes[0]) catch {};
+                }
+                return Value{ .tagged_union = .{ .value = vp, .tag = id_name, .variants = &.{}, .type_name = null } };
+            }
+        }
+    }
+
     const callee = try self.evalNode(callee_node, scope, exclude);
     if (callee.isUndefined()) return self.rtErrSpan("calling undefined value", callee_node.span);
     const func = switch (callee) {
@@ -842,6 +899,26 @@ pub fn evalFunctionCall(self: *Evaluator, callee_node: *const Ast.Node, arg_node
             if (self.last_error) |le| self.collected_errors.append(self.allocator, le) catch {};
             self.last_error = null;
             args[idx] = .undefined;
+        }
+        // §3.5/§3.7 v0.10: if arg is undefined (e.g. bare enum variant identifier),
+        // try to resolve against the corresponding parameter type.
+        if (args[idx].isUndefined() and idx < func.params.len) {
+            const ptype = func.params[idx].type_expr;
+            if (ptype.data == .name) {
+                if (scope.getType(ptype.data.name)) |td| {
+                    args[idx] = try eval_types.resolveContextualValue(self, .undefined, an, td, ptype.data.name, scope, an.span);
+                }
+            }
+        }
+        // Resolve shorthand sentinel against parameter type
+        if (isShorthandSentinel(args[idx]) and idx < func.params.len) {
+            const ptype = func.params[idx].type_expr;
+            if (ptype.data == .name) {
+                if (scope.getType(ptype.data.name)) |td| {
+                    if (td.kind == .tagged_union_type)
+                        args[idx] = try resolveShorthandAgainstType(self, args[idx], td, ptype.data.name, scope, an.span);
+                }
+            }
         }
         if (args[idx].isUndefined()) has_undefined = true;
     }
