@@ -476,6 +476,7 @@ fn evalMemberAccess(self: *Evaluator, object_node: *const Ast.Node, member: []co
     }
     const object = try self.evalNode(object_node, scope, exclude);
     if (object.isNull()) return self.typeErrSpan("cannot access member on null", span);
+    if (object == .function) return self.typeErrSpan("cannot access member on function value", span);
     if (object.isUndefined()) return .undefined;
 
     const obj = object.unwrapTransparent();
@@ -483,6 +484,7 @@ fn evalMemberAccess(self: *Evaluator, object_node: *const Ast.Node, member: []co
         .struct_val => |s| if (s.get(member)) |v| v else .undefined,
         .tuple => |t| if (h.parseOrdinalOrIndex(member)) |idx| (if (idx < t.elements.len) t.elements[idx] else .undefined) else .undefined,
         .list => |l| if (h.parseOrdinalOrIndex(member)) |idx| (if (idx < l.elements.len) l.elements[idx] else .undefined) else .undefined,
+        .function => self.typeErrSpan("cannot access member on function value", span),
         else => .undefined,
     };
 }
@@ -514,6 +516,10 @@ fn evalStructLiteral(self: *Evaluator, fields: []const Ast.Binding, parent_scope
 }
 
 fn evalListLiteral(self: *Evaluator, elements: []const *const Ast.Node, scope: *Scope, exclude: ?[]const u8) EvalError!Value {
+    for (elements) |e| {
+        if (e.kind == .undefined_literal)
+            return self.typeErrSpan("literal 'undefined' not allowed as list element", e.span);
+    }
     const vals = try self.allocator.alloc(Value, elements.len);
     for (elements, 0..) |e, i| {
         vals[i] = try self.evalNode(e, scope, exclude);

@@ -442,6 +442,10 @@ fn evalLogical(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *con
 // ── or else ──────────────────────────────────────────────────
 
 pub fn evalOrElse(self: *Evaluator, ln: *const Ast.Node, rn: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
+    if (ln.kind == .undefined_literal)
+        return self.typeErrSpan("literal 'undefined' not allowed as 'or else' operand", ln.span);
+    if (rn.kind == .undefined_literal)
+        return self.typeErrSpan("literal 'undefined' not allowed as 'or else' operand", rn.span);
     const left = try self.evalNode(ln, scope, exclude);
     if (left.isUndefined()) {
         const right = try self.evalNode(rn, scope, exclude);

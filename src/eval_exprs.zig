@@ -13,6 +13,10 @@ const EvalError = Evaluator.EvalError;
 // ── if/case expressions ──────────────────────────────────────
 
 pub fn evalIfExpr(self: *Evaluator, cond_node: *const Ast.Node, then_node: *const Ast.Node, else_node: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
+    if (then_node.kind == .undefined_literal)
+        return self.typeErrSpan("literal 'undefined' not allowed in if/then branch", then_node.span);
+    if (else_node.kind == .undefined_literal)
+        return self.typeErrSpan("literal 'undefined' not allowed in if/else branch", else_node.span);
     const cond = try self.evalNode(cond_node, scope, exclude);
     switch (cond) {
         .bool_val => |bv| {
@@ -765,6 +769,9 @@ fn defaultReferencesParam(node: *const Ast.Node, params: []const Ast.FunctionPar
 }
 
 pub fn evalFunctionExpr(self: *Evaluator, params: []const Ast.FunctionParam, return_type: Ast.TypeExpr, body_bindings: []const Ast.Binding, body_expr: *const Ast.Node, scope: *Scope) EvalError!Value {
+    // §4.5: literal 'undefined' cannot be the function body's final expression.
+    if (body_expr.kind == .undefined_literal)
+        return self.typeErrSpan("literal 'undefined' not allowed as function body final expression", body_expr.span);
     // §3.8: validate default values at function-definition time.
     for (params) |p| if (p.default) |dn| {
         // Defaults must not reference any parameter of the same function.

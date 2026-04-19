@@ -116,9 +116,9 @@ test "eval or_else with undefined" {
     defer arena.deinit();
     const a = arena.allocator();
 
+    // §4.5: literal undefined is not allowed as an or_else operand.
     const n = try node(a, .{ .or_else = .{ .left = try node(a, .undefined_literal), .right = try intLit(a, "42") } });
-    const result = try eval(a, n);
-    try std.testing.expectEqual(@as(i128, 42), result.integer.value);
+    try std.testing.expectError(error.UzonType, eval(a, n));
 }
 
 test "eval or_else with null passes through" {

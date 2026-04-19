@@ -122,14 +122,37 @@ pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_exp
     }
 
     // Named type annotation (from `called` registry)
-    if (scope.getType(type_name)) |td|
+    if (scope.getType(type_name)) |td| {
+        // §6.1: `null as T` is valid only when T admits null. Named enums and
+        // named structs never admit null. Untagged unions must include `null` as
+        // a member type. (Tagged unions are handled by evalNamedVariant when the
+        // value is null and the target variant's inner type is null.)
+        if (value == .null_val) {
+            switch (td.kind) {
+                .enum_type => return self.typeErr("cannot annotate null as named enum type", span.line, span.col),
+                .struct_type => return self.typeErr("cannot annotate null as named struct type", span.line, span.col),
+                .union_type => |ut| {
+                    var has_null = false;
+                    for (ut.types) |m| if (std.mem.eql(u8, m, "null")) {
+                        has_null = true;
+                        break;
+                    };
+                    if (!has_null) return self.typeErr("cannot annotate null as named union without 'null' member", span.line, span.col);
+                },
+                .function_type, .list_type => return self.typeErr("cannot annotate null as this type", span.line, span.col),
+                .tagged_union_type => {},
+            }
+        }
         return stampNamedType(self, expr_node, td, type_name, value, scope, span);
+    }
 
     return self.typeErr("unknown type name in annotation", span.line, span.col);
 }
 
 fn annotateList(self: *Evaluator, expr_node: *const Ast.Node, inner_type: *const Ast.TypeExpr, value: Value, scope: *Scope, span: Ast.Span) EvalError!Value {
     if (value.isUndefined()) return .undefined;
+    // §6.1: null is not a list value — `null as [T]` is a type error.
+    if (value == .null_val) return self.typeErrSpan("cannot annotate null as list type", span);
     if (value != .list) return value;
 
     const et = try typeExprToString(self, inner_type.*);
