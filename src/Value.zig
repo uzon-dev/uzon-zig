@@ -117,6 +117,7 @@ pub const TypeDef = struct {
         name: []const u8,
         type_category: []const u8,
         type_annotation: ?[]const u8 = null,
+        default: Value = .undefined,
     };
 };
 

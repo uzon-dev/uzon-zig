@@ -242,26 +242,43 @@ fn stampNamedType(self: *Evaluator, expr_node: *const Ast.Node, td: *const val.T
         .struct_val => |s| {
             if (s.type_name) |existing| if (!std.mem.eql(u8, existing, type_name))
                 return self.typeErr("nominal type mismatch: value has a different named type", span.line, span.col);
+            var final_keys = s.keys;
             var final_values = s.values;
             if (td.kind == .struct_type) {
                 const st = td.kind.struct_type;
-                if (s.keys.len != st.fields.len) return self.typeErr("struct shape does not match named type", span.line, span.col);
-                const new_values = try self.allocator.alloc(Value, s.values.len);
-                @memcpy(new_values, s.values);
-                for (st.fields) |f| {
-                    const fi = for (s.keys, 0..) |k, ki| {
+                // Reject unknown fields (§3.2: no extras allowed)
+                for (s.keys) |k| {
+                    var known = false;
+                    for (st.fields) |f| if (std.mem.eql(u8, k, f.name)) {
+                        known = true;
+                        break;
+                    };
+                    if (!known) return self.typeErr("struct field not declared in named type", span.line, span.col);
+                }
+                const new_keys = try self.allocator.alloc([]const u8, st.fields.len);
+                const new_values = try self.allocator.alloc(Value, st.fields.len);
+                for (st.fields, 0..) |f, ti| {
+                    new_keys[ti] = f.name;
+                    const found_idx: ?usize = for (s.keys, 0..) |k, ki| {
                         if (std.mem.eql(u8, k, f.name)) break ki;
-                    } else return self.typeErr("struct missing field for named type", span.line, span.col);
-                    const fval = s.values[fi];
-                    if (!fval.isNull() and !fval.isUndefined()) {
-                        if (!std.mem.eql(u8, fval.typeName(), f.type_category))
-                            return self.typeErr("struct field type does not match named type definition", span.line, span.col);
-                        if (f.type_annotation) |ta| try validateFieldTypeAnnotation(self, fval, ta, fi, new_values, span);
+                    } else null;
+                    if (found_idx) |fi| {
+                        const fval = s.values[fi];
+                        new_values[ti] = fval;
+                        if (!fval.isNull() and !fval.isUndefined()) {
+                            if (!std.mem.eql(u8, fval.typeName(), f.type_category))
+                                return self.typeErr("struct field type does not match named type definition", span.line, span.col);
+                            if (f.type_annotation) |ta| try validateFieldTypeAnnotation(self, fval, ta, ti, new_values, span);
+                        }
+                    } else {
+                        // §3.2: missing field — fill from declared default
+                        new_values[ti] = f.default;
                     }
                 }
+                final_keys = new_keys;
                 final_values = new_values;
             }
-            result = Value{ .struct_val = .{ .keys = s.keys, .values = final_values, .type_name = type_name } };
+            result = Value{ .struct_val = .{ .keys = final_keys, .values = final_values, .type_name = type_name } };
         },
         .function => |f| result = Value{ .function = .{ .params = f.params, .return_type = f.return_type, .body_bindings = f.body_bindings, .body_expr = f.body_expr, .captured_keys = f.captured_keys, .captured_values = f.captured_values, .captured_types = f.captured_types, .type_name = type_name } },
         .list => |l| result = Value{ .list = .{ .elements = l.elements, .element_type = l.element_type, .type_name = type_name } },
@@ -528,8 +545,14 @@ pub fn buildTypeDef(self: *Evaluator, name: []const u8, value: Value) ?val.TypeD
                     .type_annotation = switch (fv) {
                         .integer => |iv| if (iv.explicit) h.intTypeNameAlloc(self.allocator, iv.type_ann) else null,
                         .float_val => |fvv| if (fvv.explicit) h.floatTypeName(fvv.type_ann) else null,
+                        .struct_val => |sv| sv.type_name,
+                        .enum_val => |ev| ev.type_name,
+                        .union_val => |uv| uv.type_name,
+                        .tagged_union => |tu| tu.type_name,
+                        .list => |lv| lv.element_type,
                         else => null,
                     },
+                    .default = fv,
                 };
             }
             break :blk val.TypeDef{ .name = name, .kind = .{ .struct_type = .{ .fields = fields } } };
