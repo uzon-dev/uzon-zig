@@ -182,22 +182,12 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
         }
 
         const pre_count = self.collected_errors.items.len;
-        // §3.2/§3.5 v0.10: when `are X ... as [Type]` (or `as Type` which lifts to element type),
-        // fold the annotation into evaluation so element homogeneity is checked against the
-        // declared type (with defaults), not raw. list_type_annotation stores the ELEMENT type —
-        // wrap in `[...]` if it isn't already a list type.
+        // §3.4.1: the list-level `as T` annotation applies to the list value as-is.
+        // If T is `[X]` or a named list type, it adopts normally; any other type is
+        // a type error (e.g. `ids are 1, 2, 3 as i32`).
         const eval_node_expr: *const Ast.Node = if (binding.is_are and binding.list_type_annotation != null) blk: {
             const wrapped = self.allocator.create(Ast.Node) catch break :blk binding.value;
-            const lta = binding.list_type_annotation.?;
-            const outer_type: Ast.TypeExpr = if (lta.data == .list) lta else Ast.TypeExpr{
-                .data = .{ .list = blk2: {
-                    const inner_ptr = self.allocator.create(Ast.TypeExpr) catch break :blk binding.value;
-                    inner_ptr.* = lta;
-                    break :blk2 inner_ptr;
-                } },
-                .span = lta.span,
-            };
-            wrapped.* = .{ .kind = .{ .type_annotation = .{ .expr = binding.value, .type_expr = outer_type } }, .span = binding.value.span };
+            wrapped.* = .{ .kind = .{ .type_annotation = .{ .expr = binding.value, .type_expr = binding.list_type_annotation.? } }, .span = binding.value.span };
             break :blk wrapped;
         } else binding.value;
         const value = self.evalNode(eval_node_expr, scope, binding.name) catch |e| switch (e) {

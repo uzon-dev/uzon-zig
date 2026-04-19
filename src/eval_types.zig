@@ -439,7 +439,27 @@ fn stampNamedType(self: *Evaluator, expr_node: *const Ast.Node, td: *const val.T
             result = Value{ .struct_val = .{ .keys = final_keys, .values = final_values, .type_name = type_name } };
         },
         .function => |f| result = Value{ .function = .{ .params = f.params, .return_type = f.return_type, .body_bindings = f.body_bindings, .body_expr = f.body_expr, .captured_keys = f.captured_keys, .captured_values = f.captured_values, .captured_types = f.captured_types, .type_name = type_name } },
-        .list => |l| result = Value{ .list = .{ .elements = l.elements, .element_type = l.element_type, .type_name = type_name } },
+        .list => |l| {
+            if (td.kind != .list_type)
+                return self.typeErrSpan("cannot annotate list as non-list named type", span);
+            const lt = td.kind.list_type;
+            const new_elems: []const Value = if (lt.element_type) |et_name| blk: {
+                const adopted = try self.allocator.alloc(Value, l.elements.len);
+                for (l.elements, 0..) |elem, j| {
+                    if (elem.isUndefined() or elem.isNull()) {
+                        adopted[j] = elem;
+                    } else {
+                        const a = h.adoptToType(elem, et_name);
+                        if (!h.valueMatchesType(a, et_name))
+                            return self.typeErrSpan("list element does not match named list's element type", span);
+                        adopted[j] = a;
+                    }
+                }
+                break :blk adopted;
+            } else l.elements;
+            const elem_type: ?[]const u8 = lt.element_type orelse l.element_type;
+            result = Value{ .list = .{ .elements = new_elems, .element_type = elem_type, .type_name = type_name } };
+        },
         else => {},
     }
     return result;
