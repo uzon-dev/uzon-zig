@@ -255,6 +255,56 @@ fn stampNamedType(self: *Evaluator, expr_node: *const Ast.Node, td: *const val.T
         return @import("eval_exprs.zig").resolveShorthandAgainstType(self, value, td, type_name, scope, span);
     }
 
+    // §6.3 R7: literal adoption into named union — integer/float/string/bool
+    // literals pick the first member whose category exactly matches; integer
+    // literals may fall back to a float member via promotion. Float literals
+    // never adopt integer types.
+    if (td.kind == .union_type and value != .union_val and value != .null_val and !value.isUndefined()) {
+        const ut = td.kind.union_type;
+        const lit_cat: ?[]const u8 = switch (value) {
+            .integer => |iv| if (!iv.explicit) "integer" else null,
+            .float_val => |fv| if (!fv.explicit) "float" else null,
+            .string => "string",
+            .bool_val => "bool",
+            else => null,
+        };
+        if (lit_cat) |cat| {
+            var chosen_idx: ?usize = null;
+            for (ut.types, 0..) |mt, i| {
+                const mc: ?[]const u8 = blk: {
+                    if (h.parseIntegerTypeName(mt) != null) break :blk "integer";
+                    if (h.parseFloatTypeName(mt) != null) break :blk "float";
+                    if (std.mem.eql(u8, mt, "string")) break :blk "string";
+                    if (std.mem.eql(u8, mt, "bool")) break :blk "bool";
+                    break :blk null;
+                };
+                if (mc) |m| if (std.mem.eql(u8, m, cat)) {
+                    chosen_idx = i;
+                    break;
+                };
+            }
+            // Integer → float promotion fallback (never float → integer).
+            if (chosen_idx == null and std.mem.eql(u8, cat, "integer")) {
+                for (ut.types, 0..) |mt, i| {
+                    if (h.parseFloatTypeName(mt) != null) {
+                        chosen_idx = i;
+                        break;
+                    }
+                }
+            }
+            if (chosen_idx) |ci| {
+                const mt = ut.types[ci];
+                const adopted = h.adoptToType(value, mt);
+                if (!h.valueMatchesType(adopted, mt))
+                    return self.typeErr("union value does not match chosen member type", span.line, span.col);
+                const vp = try self.allocator.create(Value);
+                vp.* = adopted;
+                return Value{ .union_val = .{ .value = vp, .types = ut.types, .type_name = type_name } };
+            }
+            return self.typeErr("union value does not match any member type", span.line, span.col);
+        }
+    }
+
     var result = value;
     switch (result) {
         .enum_val => |e| {
