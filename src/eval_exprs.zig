@@ -473,6 +473,16 @@ pub fn resolveShorthandAgainstType(self: *Evaluator, sentinel: Value, td: *const
                         };
                     };
                 }
+                // §3.7: nested shorthand — if inner value is itself a sentinel and the
+                // variant's declared inner type is a named tagged union, recursively
+                // resolve the nested sentinel against that type.
+                if (isShorthandSentinel(adopted)) {
+                    if (scope) |sc| if (sc.getType(vtn)) |inner_td| {
+                        if (inner_td.kind == .tagged_union_type) {
+                            adopted = try resolveShorthandAgainstType(self, adopted, inner_td, vtn, sc, span);
+                        }
+                    };
+                }
                 if (!adopted.isNull() and !adopted.isUndefined()) {
                     adopted = h.adoptToType(adopted, vtn);
                     // Stamp struct/tagged type_name onto adopted if it's a compound
@@ -987,8 +997,34 @@ pub fn evalFunctionCall(self: *Evaluator, callee_node: *const Ast.Node, arg_node
         }
     }
 
+    // §3.5 R4: bare enum/tagged variant name as the body's final expression is
+    // resolved against the declared return type BEFORE evaluation (to avoid the
+    // lexical-lookup failure path setting an error).
+    if (func.body_expr.kind == .identifier and func.return_type.data == .name) {
+        const rtn_name = func.return_type.data.name;
+        if (func_scope.getType(rtn_name)) |td| {
+            const id_name = func.body_expr.kind.identifier.name;
+            if (func_scope.get(id_name, null) == null) {
+                if (eval_types.variantLookup(td, rtn_name, id_name, self.allocator)) |v| {
+                    try self.evalBindings(func.body_bindings, &func_scope, null);
+                    return v;
+                }
+            }
+        }
+    }
+
     try self.evalBindings(func.body_bindings, &func_scope, null);
     var result = try self.evalNode(func.body_expr, &func_scope, null);
+
+    // §3.7 v0.10: resolve shorthand sentinel against declared return type.
+    if (func.return_type.data == .name) {
+        const rtn_name = func.return_type.data.name;
+        if (func_scope.getType(rtn_name)) |td| {
+            if (isShorthandSentinel(result) and td.kind == .tagged_union_type) {
+                result = try resolveShorthandAgainstType(self, result, td, rtn_name, &func_scope, func.body_expr.span);
+            }
+        }
+    }
 
     if (func.return_type.data == .name) {
         const rtn = func.return_type.data.name;

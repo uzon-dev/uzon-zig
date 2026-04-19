@@ -392,6 +392,26 @@ fn findBindingAst(bindings: []const Ast.Binding, name: []const u8) ?*const Ast.N
     return null;
 }
 
+/// §3.5 R4: look up a bare identifier as a variant of the given named type.
+/// Returns the resolved Value, or null if the name is not a variant.
+pub fn variantLookup(td: *const val.TypeDef, type_name: []const u8, id_name: []const u8, allocator: std.mem.Allocator) ?Value {
+    switch (td.kind) {
+        .enum_type => |et| {
+            for (et.variants) |v| if (std.mem.eql(u8, v, id_name))
+                return Value{ .enum_val = .{ .value = id_name, .variants = et.variants, .type_name = type_name } };
+        },
+        .tagged_union_type => |tut| {
+            for (tut.variants) |v| if (std.mem.eql(u8, v.name, id_name)) {
+                const inner = allocator.create(Value) catch return null;
+                inner.* = .null_val;
+                return Value{ .tagged_union = .{ .value = inner, .tag = id_name, .variants = tut.variants, .type_name = type_name } };
+            };
+        },
+        else => {},
+    }
+    return null;
+}
+
 /// §3.5/§3.7: resolve a value against a known named type context.
 /// - If shorthand sentinel and target is tagged union → resolve.
 /// - If value is undefined and AST node is bare identifier matching a variant → resolve.
