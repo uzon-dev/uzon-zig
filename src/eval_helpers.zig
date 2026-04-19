@@ -61,6 +61,7 @@ pub fn valueMatchesType(v: Value, type_name: []const u8) bool {
         .union_val => |u| if (u.type_name) |tn| return std.mem.eql(u8, tn, type_name),
         .tagged_union => |tu| if (tu.type_name) |tn| return std.mem.eql(u8, tn, type_name),
         .struct_val => |s| if (s.type_name) |tn| return std.mem.eql(u8, tn, type_name),
+        .list => |l| if (l.type_name) |tn| return std.mem.eql(u8, tn, type_name),
         .function => |f| if (f.type_name) |tn| return std.mem.eql(u8, tn, type_name),
         else => {},
     }

@@ -403,7 +403,7 @@ fn stdReverse(self: *Evaluator, args: []const Value, arg_spans: []const Ast.Span
         .list => |l| blk: {
             const elems = try self.allocator.alloc(Value, l.elements.len);
             for (l.elements, 0..) |_, i| elems[i] = l.elements[l.elements.len - 1 - i];
-            break :blk Value{ .list = .{ .elements = elems, .element_type = l.element_type } };
+            break :blk Value{ .list = .{ .elements = elems, .element_type = l.element_type, .type_name = l.type_name } };
         },
         .string => |s| blk: {
             var cps = std.ArrayListUnmanaged([]const u8){};
@@ -513,7 +513,7 @@ fn stdFilter(self: *Evaluator, args: []const Value, arg_spans: []const Ast.Span,
             else => return self.typeErrSpan("std.filter predicate must return bool", s1),
         }
     }
-    return Value{ .list = .{ .elements = result.items, .element_type = l.element_type } };
+    return Value{ .list = .{ .elements = result.items, .element_type = l.element_type, .type_name = l.type_name } };
 }
 
 fn stdReduce(self: *Evaluator, args: []const Value, arg_spans: []const Ast.Span, span: Ast.Span) EvalError!Value {
@@ -583,7 +583,7 @@ fn stdSort(self: *Evaluator, args: []const Value, arg_spans: []const Ast.Span, s
             }
         }.lessThan);
         if (ctx.err) |e| return e;
-        return Value{ .list = .{ .elements = elems } };
+        return Value{ .list = .{ .elements = elems, .element_type = l.element_type, .type_name = l.type_name } };
     }
 
     // 1-arg form: sort by natural ordering
@@ -606,7 +606,7 @@ fn stdSort(self: *Evaluator, args: []const Value, arg_spans: []const Ast.Span, s
         }.lessThan),
         else => return self.typeErrSpan("std.sort requires list of comparable values", s0),
     }
-    return Value{ .list = .{ .elements = elems, .element_type = l.element_type } };
+    return Value{ .list = .{ .elements = elems, .element_type = l.element_type, .type_name = l.type_name } };
 }
 
 // ── Function call helper ────────────────────────────────────

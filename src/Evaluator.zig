@@ -289,6 +289,7 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
                     .union_val => |*u| u.type_name = type_name,
                     .tagged_union => |*tu| tu.type_name = type_name,
                     .struct_val => |*s| s.type_name = type_name,
+                    .list => |*l| l.type_name = type_name,
                     .function => |*f| f.type_name = type_name,
                     else => {},
                 }
