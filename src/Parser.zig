@@ -715,6 +715,17 @@ fn parsePrimary(self: *Parser) Error!*const Ast.Node {
         },
         .identifier, .quoted_identifier => blk: {
             _ = self.advance();
+            // §3.7 variant shorthand: `ident primary` on same line.
+            // Exclude `(` — that form goes through the function_call postfix path (spec §9 call_or_access).
+            // Exclude `[` — `ident [ ... ]` is not a shorthand (ambiguous with potential future index access
+            //   and no useful inner form today). Users should use struct/string/ident/literal primaries.
+            if (self.pos < self.tokens.len) {
+                const nt = self.tokens[self.pos];
+                if (nt.line == tok.line and isShorthandInnerStart(nt.type)) {
+                    const inner = try self.parsePrimary();
+                    break :blk self.node(.{ .variant_shorthand = .{ .variant = tok.lexeme, .inner = inner } }, self.endSpan(s));
+                }
+            }
             break :blk self.node(.{ .identifier = .{ .name = tok.lexeme } }, s);
         },
         .l_brace => self.parseStructLiteral(),
@@ -725,6 +736,24 @@ fn parsePrimary(self: *Parser) Error!*const Ast.Node {
         .struct_ => self.parseStructImport(),
         .function => self.parseFunctionExpr(),
         else => self.fail("unexpected token", tok.line, tok.col),
+    };
+}
+
+fn isPrimaryStart(tt: Token.Type) bool {
+    return switch (tt) {
+        .integer, .float, .string, .interp_start, .true_, .false_, .null_, .undefined,
+        .inf, .nan, .env, .identifier, .quoted_identifier, .l_brace, .l_bracket, .l_paren,
+        .if_, .case, .struct_, .function => true,
+        else => false,
+    };
+}
+
+fn isShorthandInnerStart(tt: Token.Type) bool {
+    return switch (tt) {
+        .integer, .float, .string, .interp_start, .true_, .false_, .null_, .undefined,
+        .inf, .nan, .env, .identifier, .quoted_identifier, .l_brace, .l_bracket,
+        .if_, .case, .struct_, .function => true,
+        else => false,
     };
 }
 

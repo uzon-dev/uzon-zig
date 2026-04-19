@@ -406,6 +406,88 @@ fn getVariantDefault(variants: []const val.TaggedUnion.VariantInfo, variant_name
     return .undefined;
 }
 
+// ── Variant shorthand (§3.7 v0.10) ───────────────────────────
+
+/// Evaluate `variant_name inner_primary`. Produces a sentinel tagged_union
+/// (variants=empty, type_name=null) awaiting resolution via outer context
+/// (stampNamedType, function arg/return adoption, list element adoption).
+pub fn evalVariantShorthand(self: *Evaluator, variant: []const u8, inner_node: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
+    _ = span;
+    // Try to evaluate inner. If it errors (e.g. bare variant name not in scope), defer to resolution.
+    const inner: Value = self.evalNode(inner_node, scope, exclude) catch blk: {
+        // swallow the error — resolveShorthandAgainstType will retry with type context
+        self.last_error = null;
+        break :blk .undefined;
+    };
+    const vp = try self.allocator.create(Value);
+    vp.* = inner;
+    // Record inner AST so resolution can re-interpret bare identifiers against the variant's type.
+    self.shorthand_inner_ast.put(self.allocator, @intFromPtr(vp), inner_node) catch {};
+    return Value{ .tagged_union = .{ .value = vp, .tag = variant, .variants = &.{}, .type_name = null } };
+}
+
+/// True if `v` is an unresolved variant-shorthand sentinel.
+pub fn isShorthandSentinel(v: Value) bool {
+    return v == .tagged_union and v.tagged_union.variants.len == 0 and v.tagged_union.type_name == null;
+}
+
+/// Resolve a shorthand sentinel against a known tagged-union TypeDef.
+pub fn resolveShorthandAgainstType(self: *Evaluator, sentinel: Value, td: *const val.TypeDef, type_name: []const u8, scope: ?*Scope, span: Ast.Span) EvalError!Value {
+    std.debug.assert(isShorthandSentinel(sentinel));
+    const tut = switch (td.kind) {
+        .tagged_union_type => |t| t,
+        else => return self.typeErrSpan("variant shorthand target is not a tagged union", span),
+    };
+    const tag = sentinel.tagged_union.tag;
+    const inner_val = sentinel.tagged_union.value.*;
+    const inner_ast: ?*const Ast.Node = self.shorthand_inner_ast.get(@intFromPtr(sentinel.tagged_union.value));
+    for (tut.variants) |vi| {
+        if (std.mem.eql(u8, vi.name, tag)) {
+            var adopted = inner_val;
+            if (vi.type_name) |vtn| {
+                // §3.5/§3.7: if inner is undefined (couldn't resolve at shorthand-eval time)
+                // and AST is a bare identifier matching a variant of the variant's declared
+                // enum/tagged-union type, resolve it now.
+                if (adopted.isUndefined()) {
+                    if (inner_ast) |an| if (an.kind == .identifier) {
+                        const id_name = an.kind.identifier.name;
+                        // Look up the variant's declared type in scope (via global eval state)
+                        // The scope isn't available here — use the current top-level scope.
+                        // We rely on the caller having a live scope; fall through if not resolvable.
+                        if (scope) |sc| if (sc.getType(vtn)) |inner_td| switch (inner_td.kind) {
+                            .enum_type => |et| for (et.variants) |ev| if (std.mem.eql(u8, ev, id_name)) {
+                                adopted = Value{ .enum_val = .{ .value = id_name, .variants = et.variants, .type_name = vtn } };
+                                break;
+                            },
+                            .tagged_union_type => |itut| for (itut.variants) |iv| if (std.mem.eql(u8, iv.name, id_name)) {
+                                const inp = try self.allocator.create(Value);
+                                inp.* = .null_val;
+                                adopted = Value{ .tagged_union = .{ .value = inp, .tag = id_name, .variants = itut.variants, .type_name = vtn } };
+                                break;
+                            },
+                            else => {},
+                        };
+                    };
+                }
+                if (!adopted.isNull() and !adopted.isUndefined()) {
+                    adopted = h.adoptToType(adopted, vtn);
+                    // Stamp struct/tagged type_name onto adopted if it's a compound
+                    if (adopted == .struct_val and adopted.struct_val.type_name == null)
+                        adopted = Value{ .struct_val = .{ .keys = adopted.struct_val.keys, .values = adopted.struct_val.values, .type_name = vtn } };
+                    if (adopted == .function and adopted.function.type_name == null)
+                        adopted = Value{ .function = .{ .params = adopted.function.params, .return_type = adopted.function.return_type, .body_bindings = adopted.function.body_bindings, .body_expr = adopted.function.body_expr, .captured_keys = adopted.function.captured_keys, .captured_values = adopted.function.captured_values, .captured_types = adopted.function.captured_types, .type_name = vtn } };
+                    if (!h.valueMatchesType(adopted, vtn))
+                        return self.typeErrSpan("variant shorthand inner value does not match variant's declared type", span);
+                }
+            }
+            const vp = try self.allocator.create(Value);
+            vp.* = adopted;
+            return Value{ .tagged_union = .{ .value = vp, .tag = tag, .variants = tut.variants, .type_name = type_name } };
+        }
+    }
+    return self.typeErrSpan("variant shorthand name not found in tagged union", span);
+}
+
 // ── Enum/Union/TaggedUnion construction ──────────────────────
 
 pub fn evalFromEnum(self: *Evaluator, value_node: *const Ast.Node, variants: []const []const u8, scope: *Scope, exclude: ?[]const u8) EvalError!Value {

@@ -23,6 +23,10 @@ import_cache: std.StringArrayHashMapUnmanaged(Value) = .{},
 import_type_cache: std.StringArrayHashMapUnmanaged(std.StringHashMapUnmanaged(*const val.TypeDef)) = .{},
 import_stack: std.ArrayListUnmanaged([]const u8) = .{},
 last_import_types: std.StringHashMapUnmanaged(*const val.TypeDef) = .{},
+/// Side-map: sentinel inner-Value pointer → AST node of the variant_shorthand's inner primary.
+/// Keyed by the `*Value` pointer in `tagged_union.value`. Used to re-resolve bare-identifier
+/// inners (e.g. `focus forward` where `forward` is an enum variant) at type-context sites.
+shorthand_inner_ast: std.AutoHashMapUnmanaged(usize, *const Ast.Node) = .{},
 
 pub const EvalError = error{ UzonType, UzonRuntime, UzonCircular, OutOfMemory };
 
@@ -178,7 +182,25 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
         }
 
         const pre_count = self.collected_errors.items.len;
-        const value = self.evalNode(binding.value, scope, binding.name) catch |e| switch (e) {
+        // §3.2/§3.5 v0.10: when `are X ... as [Type]` (or `as Type` which lifts to element type),
+        // fold the annotation into evaluation so element homogeneity is checked against the
+        // declared type (with defaults), not raw. list_type_annotation stores the ELEMENT type —
+        // wrap in `[...]` if it isn't already a list type.
+        const eval_node_expr: *const Ast.Node = if (binding.is_are and binding.list_type_annotation != null) blk: {
+            const wrapped = self.allocator.create(Ast.Node) catch break :blk binding.value;
+            const lta = binding.list_type_annotation.?;
+            const outer_type: Ast.TypeExpr = if (lta.data == .list) lta else Ast.TypeExpr{
+                .data = .{ .list = blk2: {
+                    const inner_ptr = self.allocator.create(Ast.TypeExpr) catch break :blk binding.value;
+                    inner_ptr.* = lta;
+                    break :blk2 inner_ptr;
+                } },
+                .span = lta.span,
+            };
+            wrapped.* = .{ .kind = .{ .type_annotation = .{ .expr = binding.value, .type_expr = outer_type } }, .span = binding.value.span };
+            break :blk wrapped;
+        } else binding.value;
+        const value = self.evalNode(eval_node_expr, scope, binding.name) catch |e| switch (e) {
             error.UzonCircular => {
                 // circErr (e.g. circular file import) sets last_error only.
                 // Promote it to collected_errors so it survives.
@@ -338,6 +360,7 @@ pub fn evalNode(self: *Evaluator, node: *const Ast.Node, scope: *Scope, exclude:
         .function_call => |fc| eval_exprs.evalFunctionCall(self, fc.callee, fc.args, scope, exclude, node.span),
         .struct_import => |si| eval_exprs.evalStructImport(self, si.path, si.path_span, node.span),
         .type_pattern => .undefined, // only meaningful inside case type evaluation
+        .variant_shorthand => |vs| eval_exprs.evalVariantShorthand(self, vs.variant, vs.inner, scope, exclude, node.span),
     };
 }
 

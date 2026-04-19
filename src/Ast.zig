@@ -160,6 +160,9 @@ pub const Node = struct {
 
         // Type pattern (for case type when clauses with compound types)
         type_pattern: struct { type_expr: TypeExpr },
+
+        // Variant shorthand: `variant_name inner_primary` (§3.7 v0.10)
+        variant_shorthand: struct { variant: []const u8, inner: *const Node },
     };
 };
 

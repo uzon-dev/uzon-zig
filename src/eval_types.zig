@@ -19,6 +19,23 @@ pub fn isBuiltinTypeName(name: []const u8) bool {
 // ── Type annotation (`as`) ───────────────────────────────────
 
 pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_expr: *const Ast.TypeExpr, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
+    // §3.2 v0.10: list literal `[...] as [NamedStruct]` — evaluate elements raw (no homogeneity)
+    // so struct defaults per type-def can fill in missing fields before the final shape check.
+    if (type_expr.data == .list and expr_node.kind == .list_literal) {
+        const inner_type = type_expr.data.list;
+        const inner_name: ?[]const u8 = switch (inner_type.data) {
+            .name => |n| n,
+            .path => |segs| resolvePathTypeName(self, segs, inner_type.*, scope),
+            else => null,
+        };
+        if (inner_name) |n| if (scope.getType(n) != null) {
+            const elements = expr_node.kind.list_literal.elements;
+            const raw = try self.allocator.alloc(Value, elements.len);
+            for (elements, 0..) |e, i| raw[i] = try self.evalNode(e, scope, exclude);
+            const list_val = Value{ .list = .{ .elements = raw } };
+            return annotateList(self, expr_node, inner_type, list_val, scope, span);
+        };
+    }
     const value = try self.evalNode(expr_node, scope, exclude);
 
     const type_name = switch (type_expr.data) {
@@ -106,7 +123,7 @@ pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_exp
 
     // Named type annotation (from `called` registry)
     if (scope.getType(type_name)) |td|
-        return stampNamedType(self, expr_node, td, type_name, value, span);
+        return stampNamedType(self, expr_node, td, type_name, value, scope, span);
 
     return self.typeErr("unknown type name in annotation", span.line, span.col);
 }
@@ -123,32 +140,30 @@ fn annotateList(self: *Evaluator, expr_node: *const Ast.Node, inner_type: *const
         else => null,
     };
 
-    // Enum variant resolution for list elements
+    // §3.5/§3.7 v0.10: context-aware resolution for list elements (enum/tagged/struct)
+    var resolved_elements: []const Value = value.list.elements;
     if (inner_type_name) |itn| {
         if (scope.getType(itn)) |td| {
-            if (td.kind == .enum_type and expr_node.kind == .list_literal) {
-                const ev = td.kind.enum_type;
+            if (expr_node.kind == .list_literal) {
                 const ast_elems = expr_node.kind.list_literal.elements;
                 const new_elems = try self.allocator.alloc(Value, ast_elems.len);
                 for (ast_elems, value.list.elements, 0..) |ast_e, val_e, j| {
-                    if (val_e.isUndefined() and ast_e.kind == .identifier) {
-                        const name = ast_e.kind.identifier.name;
-                        var resolved = false;
-                        for (ev.variants) |v| {
-                            if (std.mem.eql(u8, v, name)) {
-                                new_elems[j] = Value{ .enum_val = .{ .value = name, .variants = ev.variants, .type_name = itn } };
-                                resolved = true;
-                                break;
-                            }
-                        }
-                        if (!resolved) new_elems[j] = val_e;
-                    } else if (val_e == .enum_val) {
-                        new_elems[j] = Value{ .enum_val = .{ .value = val_e.enum_val.value, .variants = ev.variants, .type_name = itn } };
-                    } else {
-                        new_elems[j] = val_e;
+                    var v = try resolveContextualValue(self, val_e, ast_e, td, itn, scope, span);
+                    if (td.kind == .struct_type and v == .struct_val and ast_e.kind == .struct_literal) {
+                        v = try stampNamedType(self, ast_e, td, itn, v, scope, span);
                     }
+                    new_elems[j] = v;
                 }
-                return Value{ .list = .{ .elements = new_elems, .element_type = et } };
+                resolved_elements = new_elems;
+                // Short-circuit for enum: preserve original semantics (skip adoption path below).
+                if (td.kind == .enum_type) {
+                    for (new_elems, 0..) |ev, j| {
+                        if (ev == .enum_val) {
+                            new_elems[j] = Value{ .enum_val = .{ .value = ev.enum_val.value, .variants = td.kind.enum_type.variants, .type_name = itn } };
+                        }
+                    }
+                    return Value{ .list = .{ .elements = new_elems, .element_type = et } };
+                }
             }
         }
     }
@@ -200,7 +215,7 @@ fn resolvePathTypeName(self: *Evaluator, segments: []const []const u8, te: Ast.T
     return null;
 }
 
-fn stampNamedType(self: *Evaluator, expr_node: *const Ast.Node, td: *const val.TypeDef, type_name: []const u8, value: Value, span: Ast.Span) EvalError!Value {
+fn stampNamedType(self: *Evaluator, expr_node: *const Ast.Node, td: *const val.TypeDef, type_name: []const u8, value: Value, scope: *Scope, span: Ast.Span) EvalError!Value {
     // Enum variant resolution: identifier shadowed by variant name
     if (td.kind == .enum_type) {
         if (expr_node.kind == .identifier) {
@@ -210,6 +225,11 @@ fn stampNamedType(self: *Evaluator, expr_node: *const Ast.Node, td: *const val.T
                     return Value{ .enum_val = .{ .value = name, .variants = td.kind.enum_type.variants, .type_name = type_name } };
             }
         }
+    }
+
+    // §3.7 v0.10: variant shorthand sentinel resolves against tagged union target.
+    if (td.kind == .tagged_union_type and @import("eval_exprs.zig").isShorthandSentinel(value)) {
+        return @import("eval_exprs.zig").resolveShorthandAgainstType(self, value, td, type_name, scope, span);
     }
 
     var result = value;
@@ -255,6 +275,7 @@ fn stampNamedType(self: *Evaluator, expr_node: *const Ast.Node, td: *const val.T
                     };
                     if (!known) return self.typeErr("struct field not declared in named type", span.line, span.col);
                 }
+                const binding_asts: []const Ast.Binding = if (expr_node.kind == .struct_literal) expr_node.kind.struct_literal.fields else &.{};
                 const new_keys = try self.allocator.alloc([]const u8, st.fields.len);
                 const new_values = try self.allocator.alloc(Value, st.fields.len);
                 for (st.fields, 0..) |f, ti| {
@@ -263,7 +284,13 @@ fn stampNamedType(self: *Evaluator, expr_node: *const Ast.Node, td: *const val.T
                         if (std.mem.eql(u8, k, f.name)) break ki;
                     } else null;
                     if (found_idx) |fi| {
-                        const fval = s.values[fi];
+                        var fval = s.values[fi];
+                        // §3.5/§3.7: resolve bare variant / shorthand sentinel against field's declared named type.
+                        if (f.type_annotation) |ta| {
+                            if (scope.getType(ta)) |ftd| {
+                                fval = try resolveContextualValue(self, fval, findBindingAst(binding_asts, f.name), ftd, ta, scope, span);
+                            }
+                        }
                         new_values[ti] = fval;
                         if (!fval.isNull() and !fval.isUndefined()) {
                             if (!std.mem.eql(u8, fval.typeName(), f.type_category))
@@ -285,6 +312,45 @@ fn stampNamedType(self: *Evaluator, expr_node: *const Ast.Node, td: *const val.T
         else => {},
     }
     return result;
+}
+
+fn findBindingAst(bindings: []const Ast.Binding, name: []const u8) ?*const Ast.Node {
+    for (bindings) |b| if (std.mem.eql(u8, b.name, name)) return b.value;
+    return null;
+}
+
+/// §3.5/§3.7: resolve a value against a known named type context.
+/// - If shorthand sentinel and target is tagged union → resolve.
+/// - If value is undefined and AST node is bare identifier matching a variant → resolve.
+pub fn resolveContextualValue(self: *Evaluator, value: Value, ast_node: ?*const Ast.Node, td: *const val.TypeDef, type_name: []const u8, scope: ?*Scope, span: Ast.Span) EvalError!Value {
+    const eval_exprs = @import("eval_exprs.zig");
+    if (eval_exprs.isShorthandSentinel(value)) {
+        if (td.kind == .tagged_union_type)
+            return eval_exprs.resolveShorthandAgainstType(self, value, td, type_name, scope, span);
+        return self.typeErrSpan("variant shorthand used where non-tagged-union type is expected", span);
+    }
+    if (value.isUndefined()) {
+        if (ast_node) |an| {
+            if (an.kind == .identifier) {
+                const id_name = an.kind.identifier.name;
+                switch (td.kind) {
+                    .enum_type => |et| {
+                        for (et.variants) |v| if (std.mem.eql(u8, v, id_name))
+                            return Value{ .enum_val = .{ .value = id_name, .variants = et.variants, .type_name = type_name } };
+                    },
+                    .tagged_union_type => |tut| {
+                        for (tut.variants) |v| if (std.mem.eql(u8, v.name, id_name)) {
+                            const inner = try self.allocator.create(Value);
+                            inner.* = .null_val;
+                            return Value{ .tagged_union = .{ .value = inner, .tag = id_name, .variants = tut.variants, .type_name = type_name } };
+                        };
+                    },
+                    else => {},
+                }
+            }
+        }
+    }
+    return value;
 }
 
 fn validateFieldTypeAnnotation(self: *Evaluator, fval: Value, ta: []const u8, fi: usize, new_values: []Value, span: Ast.Span) EvalError!void {

@@ -216,6 +216,7 @@ fn visitChildren(node: *const Ast.Node, ctx: anytype, visitor: anytype) void {
                 .literal => {},
             };
         },
+        .variant_shorthand => |vs| visitor(vs.inner, ctx),
     }
 }
 
