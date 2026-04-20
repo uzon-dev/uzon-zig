@@ -430,6 +430,15 @@ fn parseEquality(self: *Parser) Error!*const Ast.Node {
             const t = self.advance();
             break :blk try self.node(.{ .identifier = .{ .name = t.lexeme } }, .{ .line = t.line, .col = t.col });
         } else try self.parseMembership();
+        // §5.1: at most one equality operator per expression — chaining is a syntax error.
+        self.skipNewlines();
+        switch (self.peek().type) {
+            .is, .is_not, .is_named, .is_not_named, .is_type, .is_not_type => {
+                const tok = self.peek();
+                return self.failSug("chained equality is not permitted", "parenthesize to make evaluation order explicit", tok.line, tok.col);
+            },
+            else => {},
+        }
         return self.node(.{ .binary_op = .{ .op = binary_op, .left = left, .right = right } }, self.endSpan(left.span));
     }
     return left;
