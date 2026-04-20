@@ -99,8 +99,28 @@ pub fn branchTypesCompatible(a: Value, b: Value) bool {
     if (a.isNull() or b.isNull()) return true;
     const cat_a = valueTypeCategory(a) orelse return true;
     const cat_b = valueTypeCategory(b) orelse return true;
-    if (std.mem.eql(u8, cat_a, cat_b)) return true;
-    return isNumericMix(cat_a, cat_b);
+    if (!std.mem.eql(u8, cat_a, cat_b)) return isNumericMix(cat_a, cat_b);
+    // §7.3 nominal identity: if both sides carry a nominal type_name for
+    // a nominal category (struct/enum/union/tagged_union), they must match.
+    return nominalNamesCompatible(a, b);
+}
+
+fn nominalNamesCompatible(a: Value, b: Value) bool {
+    const an = nominalName(a);
+    const bn = nominalName(b);
+    if (an == null or bn == null) return true;
+    return std.mem.eql(u8, an.?, bn.?);
+}
+
+fn nominalName(v: Value) ?[]const u8 {
+    return switch (v) {
+        .struct_val => |s| s.type_name,
+        .enum_val => |e| e.type_name,
+        .union_val => |u| u.type_name,
+        .tagged_union => |tu| tu.type_name,
+        .list => |l| l.type_name,
+        else => null,
+    };
 }
 
 fn isNumericMix(a: []const u8, b: []const u8) bool {
