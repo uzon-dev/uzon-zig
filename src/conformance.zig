@@ -35,6 +35,34 @@ fn collectUzonFiles(
     return slice;
 }
 
+/// Collect names of subdirectories under `dir_path` that contain an entry.uzon.
+/// Used for multi-file fixtures where entry.uzon imports sibling modules.
+fn collectEntryDirs(
+    allocator: std.mem.Allocator,
+    dir_path: []const u8,
+) ![]const []const u8 {
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return &.{};
+    defer dir.close();
+
+    var names = std.ArrayListUnmanaged([]const u8){};
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind != .directory) continue;
+        const sub_path = try std.fmt.allocPrint(allocator, "{s}/{s}/entry.uzon", .{ dir_path, entry.name });
+        defer allocator.free(sub_path);
+        std.fs.cwd().access(sub_path, .{}) catch continue;
+        try names.append(allocator, try allocator.dupe(u8, entry.name));
+    }
+
+    const slice = try names.toOwnedSlice(allocator);
+    std.mem.sort([]const u8, slice, {}, struct {
+        fn lt(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lt);
+    return slice;
+}
+
 const TestResult = enum { pass, fail, skip };
 
 // ── Eval tests ────────────────────────────────────────────
@@ -154,6 +182,24 @@ fn runParseValidDir(alloc: std.mem.Allocator, collector: std.mem.Allocator, dir_
             .skip => skip.* += 1,
         }
     }
+
+    // Multi-file fixtures: each subdirectory with entry.uzon is a single fixture
+    const subdirs = try collectEntryDirs(collector, dir_path);
+    for (subdirs) |subdir| {
+        var test_arena = std.heap.ArenaAllocator.init(alloc);
+        defer test_arena.deinit();
+
+        const path = try std.fmt.allocPrint(test_arena.allocator(), "{s}/{s}/entry.uzon", .{ dir_path, subdir });
+        const result = try runParseValidTest(test_arena.allocator(), path);
+        switch (result) {
+            .pass => pass.* += 1,
+            .fail => {
+                fail.* += 1;
+                try failed_names.append(collector, try std.fmt.allocPrint(collector, "{s}/{s}/entry.uzon", .{ dir_path, subdir }));
+            },
+            .skip => skip.* += 1,
+        }
+    }
 }
 
 test "conformance: parse/valid" {
@@ -210,6 +256,24 @@ fn runParseInvalidDir(alloc: std.mem.Allocator, collector: std.mem.Allocator, di
             .fail => {
                 fail.* += 1;
                 try failed_names.append(collector, try std.fmt.allocPrint(collector, "{s}/{s}", .{ dir_path, file }));
+            },
+            .skip => skip.* += 1,
+        }
+    }
+
+    // Multi-file fixtures: each subdirectory with entry.uzon is a single fixture
+    const subdirs = try collectEntryDirs(collector, dir_path);
+    for (subdirs) |subdir| {
+        var test_arena = std.heap.ArenaAllocator.init(alloc);
+        defer test_arena.deinit();
+
+        const path = try std.fmt.allocPrint(test_arena.allocator(), "{s}/{s}/entry.uzon", .{ dir_path, subdir });
+        const result = try runParseInvalidTest(test_arena.allocator(), path);
+        switch (result) {
+            .pass => pass.* += 1,
+            .fail => {
+                fail.* += 1;
+                try failed_names.append(collector, try std.fmt.allocPrint(collector, "{s}/{s}/entry.uzon", .{ dir_path, subdir }));
             },
             .skip => skip.* += 1,
         }

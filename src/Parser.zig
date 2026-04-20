@@ -428,6 +428,21 @@ fn parseEquality(self: *Parser) Error!*const Ast.Node {
         self.skipNewlines();
         const right = if (is_name_or_type) blk: {
             const t = self.advance();
+            // §7.3: `is type` / `is not type` accepts a qualified type name like `m.Point`
+            // so imported nominal types can be tested. `is named` / `is not named` still
+            // takes a plain variant name (no dots).
+            const accepts_path = (binary_op == .is_type or binary_op == .is_not_type);
+            if (accepts_path and self.at(.dot)) {
+                var buf = std.ArrayListUnmanaged(u8){};
+                try buf.appendSlice(self.allocator, t.lexeme);
+                while (self.at(.dot)) {
+                    _ = self.advance();
+                    const next = try self.expect(.identifier);
+                    try buf.append(self.allocator, '.');
+                    try buf.appendSlice(self.allocator, next.lexeme);
+                }
+                break :blk try self.node(.{ .identifier = .{ .name = buf.items } }, .{ .line = t.line, .col = t.col });
+            }
             break :blk try self.node(.{ .identifier = .{ .name = t.lexeme } }, .{ .line = t.line, .col = t.col });
         } else try self.parseMembership();
         // §5.1: at most one equality operator per expression — chaining is a syntax error.

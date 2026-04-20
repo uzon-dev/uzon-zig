@@ -83,6 +83,59 @@ pub fn currentFilename(self: *const Evaluator) ?[]const u8 {
     return null;
 }
 
+/// §7.3: rewrite nominal type_names in an imported value so they reflect the
+/// importing binding's qualified name. E.g. `p` stamped as "Point" in mod.uzon
+/// becomes "m.Point" after `m is struct "./mod"`. This preserves the declaring
+/// scope's identity and makes nominal identity checks (both `as` re-stamping
+/// and cross-file `is` comparison) behave correctly.
+fn rewriteImportedTypeNames(alloc: std.mem.Allocator, v: Value, rename: *const std.StringHashMapUnmanaged([]const u8)) Value {
+    const mapName = struct {
+        fn f(r: *const std.StringHashMapUnmanaged([]const u8), name: ?[]const u8) ?[]const u8 {
+            if (name) |n| return r.get(n) orelse n;
+            return null;
+        }
+    }.f;
+    return switch (v) {
+        .struct_val => |s| blk: {
+            const new_values = alloc.alloc(Value, s.values.len) catch break :blk v;
+            for (s.values, 0..) |vv, i| new_values[i] = rewriteImportedTypeNames(alloc, vv, rename);
+            break :blk Value{ .struct_val = .{ .keys = s.keys, .values = new_values, .type_name = mapName(rename, s.type_name) } };
+        },
+        .list => |l| blk: {
+            const new_elems = alloc.alloc(Value, l.elements.len) catch break :blk v;
+            for (l.elements, 0..) |e, i| new_elems[i] = rewriteImportedTypeNames(alloc, e, rename);
+            break :blk Value{ .list = .{ .elements = new_elems, .element_type = l.element_type, .type_name = mapName(rename, l.type_name) } };
+        },
+        .tuple => |t| blk: {
+            const new_elems = alloc.alloc(Value, t.elements.len) catch break :blk v;
+            for (t.elements, 0..) |e, i| new_elems[i] = rewriteImportedTypeNames(alloc, e, rename);
+            break :blk Value{ .tuple = .{ .elements = new_elems } };
+        },
+        .enum_val => |e| Value{ .enum_val = .{ .value = e.value, .variants = e.variants, .type_name = mapName(rename, e.type_name) } },
+        .union_val => |u| blk: {
+            const new_inner = alloc.create(Value) catch break :blk v;
+            new_inner.* = rewriteImportedTypeNames(alloc, u.value.*, rename);
+            break :blk Value{ .union_val = .{ .value = new_inner, .types = u.types, .type_name = mapName(rename, u.type_name) } };
+        },
+        .tagged_union => |tu| blk: {
+            const new_inner = alloc.create(Value) catch break :blk v;
+            new_inner.* = rewriteImportedTypeNames(alloc, tu.value.*, rename);
+            break :blk Value{ .tagged_union = .{ .value = new_inner, .tag = tu.tag, .variants = tu.variants, .type_name = mapName(rename, tu.type_name) } };
+        },
+        .function => |f| Value{ .function = .{
+            .params = f.params,
+            .return_type = f.return_type,
+            .body_bindings = f.body_bindings,
+            .body_expr = f.body_expr,
+            .captured_keys = f.captured_keys,
+            .captured_values = f.captured_values,
+            .captured_types = f.captured_types,
+            .type_name = mapName(rename, f.type_name),
+        } },
+        else => v,
+    };
+}
+
 // ── Public entry points ──────────────────────────────────────
 
 pub fn evalDocument(self: *Evaluator, doc: Ast.Document) EvalError!Value {
@@ -242,12 +295,19 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
             try scope.define(binding.name, value);
         }
 
-        // Register nested types with binding name prefix
+        // Register nested types with binding name prefix, and rewrite type_names on
+        // the imported value so nominal identity is preserved across files (§7.3).
         if ((binding.value.kind == .struct_import or binding.value.kind == .struct_literal) and self.last_import_types.count() > 0) {
+            var rename = std.StringHashMapUnmanaged([]const u8){};
             var type_it = self.last_import_types.iterator();
             while (type_it.next()) |entry| {
                 const prefixed = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ binding.name, entry.key_ptr.* }) catch continue;
                 scope.types.put(scope.allocator, prefixed, entry.value_ptr.*) catch {};
+                rename.put(self.allocator, entry.key_ptr.*, prefixed) catch {};
+            }
+            if (scope.bindings.get(binding.name)) |vp| {
+                const mutable: *Value = @constCast(vp);
+                mutable.* = rewriteImportedTypeNames(self.allocator, mutable.*, &rename);
             }
             self.last_import_types = .{};
         }

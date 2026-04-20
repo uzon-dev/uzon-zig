@@ -378,6 +378,13 @@ fn evalEquality(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *co
 
     // Struct shape check
     if (l == .struct_val and r == .struct_val) {
+        // §7.3 + §3.2.1 rule 5: nominal identity — structs with distinct named
+        // types cannot be compared even if their shape matches. Anonymous structs
+        // (type_name == null) fall through to structural comparison.
+        if (l.struct_val.type_name) |ltn| if (r.struct_val.type_name) |rtn| {
+            if (!std.mem.eql(u8, ltn, rtn))
+                return self.typeErrSpan("cannot compare different nominal struct types", span);
+        };
         if (l.struct_val.keys.len != r.struct_val.keys.len)
             return self.typeErrSpan("cannot compare structs with different shapes", span);
         for (l.struct_val.keys, l.struct_val.values) |k, lv| {
