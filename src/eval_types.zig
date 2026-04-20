@@ -421,10 +421,17 @@ fn stampNamedType(self: *Evaluator, expr_node: *const Ast.Node, td: *const val.T
                     } else null;
                     if (found_idx) |fi| {
                         var fval = s.values[fi];
+                        const field_ast = findBindingAst(binding_asts, f.name);
                         // §3.5/§3.7: resolve bare variant / shorthand sentinel against field's declared named type.
                         if (f.type_annotation) |ta| {
                             if (scope.getType(ta)) |ftd| {
-                                fval = try resolveContextualValue(self, fval, findBindingAst(binding_asts, f.name), ftd, ta, scope, span);
+                                fval = try resolveContextualValue(self, fval, field_ast, ftd, ta, scope, span);
+                                // §3.2: recursively stamp nested struct values so declared-type
+                                // defaults fill in missing fields and inner annotations apply.
+                                if (ftd.kind == .struct_type and fval == .struct_val and fval.struct_val.type_name == null) {
+                                    const inner_ast = field_ast orelse expr_node;
+                                    fval = try stampNamedType(self, inner_ast, ftd, ta, fval, scope, span);
+                                }
                             }
                         }
                         new_values[ti] = fval;
