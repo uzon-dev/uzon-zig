@@ -586,6 +586,16 @@ pub fn resolveShorthandAgainstType(self: *Evaluator, sentinel: Value, td: *const
                         }
                     };
                 }
+                // §3.7: if inner is a struct_val and the variant's declared type is a
+                // named struct, stamp the struct so its fields resolve against the
+                // declared type (bare-variant identifiers, per-field `as T`, etc.).
+                if (adopted == .struct_val and inner_ast != null and inner_ast.?.kind == .struct_literal) {
+                    if (scope) |sc| if (sc.getType(vtn)) |inner_td| {
+                        if (inner_td.kind == .struct_type) {
+                            adopted = try eval_types.stampNamedTypePub(self, inner_ast.?, inner_td, vtn, adopted, sc, span);
+                        }
+                    };
+                }
                 if (!adopted.isNull() and !adopted.isUndefined()) {
                     adopted = h.adoptToType(adopted, vtn);
                     // Stamp struct/tagged type_name onto adopted if it's a compound
@@ -677,7 +687,29 @@ pub fn evalNamedVariant(self: *Evaluator, value_node: *const Ast.Node, tag: []co
                     const tut = td.kind.tagged_union_type;
                     if (!h.isValidVariantTag(tut.variants, tag))
                         return self.typeErrSpan("unknown variant name in tagged union type reuse", value_node.span);
-                    const inner_value = try self.evalNode(ta.expr, scope, exclude);
+                    var inner_value = try self.evalNode(ta.expr, scope, exclude);
+                    // §3.7: if inner is undefined and `ta.expr` is a bare identifier,
+                    // resolve it as a variant of the matched variant's declared type
+                    // (another tagged union or enum).
+                    if (inner_value.isUndefined() and ta.expr.kind == .identifier) {
+                        const id_name = ta.expr.kind.identifier.name;
+                        for (tut.variants) |vi| if (std.mem.eql(u8, vi.name, tag)) {
+                            if (vi.type_name) |vtn| if (scope.getType(vtn)) |inner_td| switch (inner_td.kind) {
+                                .enum_type => |et| for (et.variants) |ev| if (std.mem.eql(u8, ev, id_name)) {
+                                    inner_value = Value{ .enum_val = .{ .value = id_name, .variants = et.variants, .type_name = vtn } };
+                                    break;
+                                },
+                                .tagged_union_type => |itut| for (itut.variants) |iv| if (std.mem.eql(u8, iv.name, id_name)) {
+                                    const inp = try self.allocator.create(Value);
+                                    inp.* = .null_val;
+                                    inner_value = Value{ .tagged_union = .{ .value = inp, .tag = id_name, .variants = itut.variants, .type_name = vtn } };
+                                    break;
+                                },
+                                else => {},
+                            };
+                            break;
+                        };
+                    }
                     const vp = try self.allocator.create(Value);
                     vp.* = inner_value;
                     return Value{ .tagged_union = .{ .value = vp, .tag = tag, .variants = tut.variants, .type_name = tn } };

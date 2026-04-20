@@ -251,9 +251,9 @@ fn annotateList(self: *Evaluator, expr_node: *const Ast.Node, inner_type: *const
 
     // Validate and adopt list elements
     if (inner_type_name) |itn| {
-        const adopted = try self.allocator.alloc(Value, value.list.elements.len);
+        const adopted = try self.allocator.alloc(Value, resolved_elements.len);
         if (scope.getType(itn) != null) {
-            for (value.list.elements, 0..) |elem, j| {
+            for (resolved_elements, 0..) |elem, j| {
                 if (elem.isUndefined() or elem.isNull()) {
                     adopted[j] = elem;
                 } else {
@@ -266,12 +266,12 @@ fn annotateList(self: *Evaluator, expr_node: *const Ast.Node, inner_type: *const
                 }
             }
         } else {
-            for (value.list.elements, 0..) |elem, j| adopted[j] = h.adoptToType(elem, itn);
+            for (resolved_elements, 0..) |elem, j| adopted[j] = h.adoptToType(elem, itn);
         }
         return Value{ .list = .{ .elements = adopted, .element_type = et } };
     }
 
-    return Value{ .list = .{ .elements = value.list.elements, .element_type = et } };
+    return Value{ .list = .{ .elements = resolved_elements, .element_type = et } };
 }
 
 fn annotatePath(self: *Evaluator, expr_node: *const Ast.Node, segments: []const []const u8, type_expr: *const Ast.TypeExpr, value: Value, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
@@ -295,6 +295,8 @@ fn resolvePathTypeName(self: *Evaluator, segments: []const []const u8, te: Ast.T
     if (scope.getType(final_seg) != null) return final_seg;
     return null;
 }
+
+pub const stampNamedTypePub = stampNamedType;
 
 fn stampNamedType(self: *Evaluator, expr_node: *const Ast.Node, td: *const val.TypeDef, type_name: []const u8, value: Value, scope: *Scope, span: Ast.Span) EvalError!Value {
     // Enum variant resolution: identifier shadowed by variant name
