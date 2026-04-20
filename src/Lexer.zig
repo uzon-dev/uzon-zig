@@ -85,6 +85,23 @@ fn scanNormal(self: *Lexer) !void {
     const start_line = self.line;
     const start_col = self.col;
 
+    // §2.3: control characters (except LF/CR/HT) and U+007F are syntax errors.
+    if ((c < 0x20 and c != '\n' and c != '\r' and c != '\t') or c == 0x7F) {
+        return self.fail("control character in source", start_line, start_col);
+    }
+
+    // §2.3: RTL/bidi marks MUST be rejected outside string literals.
+    // U+200E/F (e2 80 8e/8f), U+202A-E (e2 80 aa-ae), U+2066-9 (e2 81 a6-a9).
+    if (c == 0xE2 and self.pos + 2 < self.source.len) {
+        const b1 = self.source[self.pos + 1];
+        const b2 = self.source[self.pos + 2];
+        const is_bidi = (b1 == 0x80 and (b2 == 0x8E or b2 == 0x8F or (b2 >= 0xAA and b2 <= 0xAE))) or
+            (b1 == 0x81 and b2 >= 0xA6 and b2 <= 0xA9);
+        if (is_bidi) {
+            return self.fail("RTL/bidi mark outside string literal", start_line, start_col);
+        }
+    }
+
     switch (c) {
         '\n' => {
             try self.emit(.newline, "\n", start_line, start_col);
@@ -215,7 +232,16 @@ fn scanString(self: *Lexer) !void {
             '\n' => {
                 return self.fail("unterminated string literal", str_start_line, str_start_col);
             },
-            else => self.advance(),
+            else => {
+                // §2.3: control characters U+0000-U+001F (except LF/CR/HT) and
+                // U+007F are syntax errors. §9 further excludes them from
+                // `unescaped` inside string literals. We let LF/CR error above
+                // as "unterminated string"; HT is permitted as ordinary content.
+                if ((c < 0x20 and c != '\t') or c == 0x7F) {
+                    return self.fail("control character in string literal", self.line, self.col);
+                }
+                self.advance();
+            },
         }
     }
 
@@ -480,6 +506,16 @@ fn scanIdentifierOrKeyword(self: *Lexer, line: u32, col: u32) !void {
     while (self.pos < self.source.len) {
         const c = self.source[self.pos];
         if (isWordBoundary(c)) break;
+        // §2.3: RTL/bidi marks are rejected mid-identifier too.
+        if (c == 0xE2 and self.pos + 2 < self.source.len) {
+            const b1 = self.source[self.pos + 1];
+            const b2 = self.source[self.pos + 2];
+            const is_bidi = (b1 == 0x80 and (b2 == 0x8E or b2 == 0x8F or (b2 >= 0xAA and b2 <= 0xAE))) or
+                (b1 == 0x81 and b2 >= 0xA6 and b2 <= 0xA9);
+            if (is_bidi) {
+                return self.fail("RTL/bidi mark outside string literal", self.line, self.col);
+            }
+        }
         self.advance();
     }
 
