@@ -151,6 +151,46 @@ pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_exp
                         return self.typeErr("not a variant of the tagged union type", span.line, span.col);
                     }
                 },
+                .union_type => |ut| {
+                    // §3.5 L866: bare identifier against union whose members include
+                    // enums/tagged unions — 0 matches falls through to undefined, exactly 1
+                    // resolves to that member's variant wrapped as a union_val, >1 is a
+                    // type error (ambiguous).
+                    if (expr_node.kind == .identifier) {
+                        const name = expr_node.kind.identifier.name;
+                        var matched_inner: ?Value = null;
+                        var match_count: usize = 0;
+                        for (ut.types) |member_name| {
+                            const mtd = scope.getType(member_name) orelse continue;
+                            switch (mtd.kind) {
+                                .enum_type => |et| {
+                                    for (et.variants) |v| if (std.mem.eql(u8, v, name)) {
+                                        match_count += 1;
+                                        matched_inner = Value{ .enum_val = .{ .value = name, .variants = et.variants, .type_name = member_name } };
+                                        break;
+                                    };
+                                },
+                                .tagged_union_type => |tut| {
+                                    for (tut.variants) |v| if (std.mem.eql(u8, v.name, name)) {
+                                        match_count += 1;
+                                        const inner_tu = try self.allocator.create(Value);
+                                        inner_tu.* = .null_val;
+                                        matched_inner = Value{ .tagged_union = .{ .value = inner_tu, .tag = name, .variants = tut.variants, .type_name = member_name } };
+                                        break;
+                                    };
+                                },
+                                else => {},
+                            }
+                        }
+                        if (match_count > 1)
+                            return self.typeErrSpan("ambiguous bare variant: matches multiple members of union type", span);
+                        if (matched_inner) |mi| {
+                            const vp = try self.allocator.create(Value);
+                            vp.* = mi;
+                            return Value{ .union_val = .{ .value = vp, .types = ut.types, .type_name = type_name } };
+                        }
+                    }
+                },
                 else => {},
             }
             return .undefined;
@@ -557,6 +597,40 @@ pub fn resolveContextualValue(self: *Evaluator, value: Value, ast_node: ?*const 
                             inner.* = .null_val;
                             return Value{ .tagged_union = .{ .value = inner, .tag = id_name, .variants = tut.variants, .type_name = type_name } };
                         };
+                    },
+                    .union_type => |ut| {
+                        // §3.5 L866: bare identifier against a union whose members include
+                        // enums/tagged unions — collect matches across all members. Zero
+                        // matches falls through as undefined; multiple matches is a type error.
+                        var matched: ?Value = null;
+                        var match_count: usize = 0;
+                        if (scope) |sc| {
+                            for (ut.types) |member_name| {
+                                const mtd = sc.getType(member_name) orelse continue;
+                                switch (mtd.kind) {
+                                    .enum_type => |et| {
+                                        for (et.variants) |v| if (std.mem.eql(u8, v, id_name)) {
+                                            match_count += 1;
+                                            matched = Value{ .enum_val = .{ .value = id_name, .variants = et.variants, .type_name = member_name } };
+                                            break;
+                                        };
+                                    },
+                                    .tagged_union_type => |tut| {
+                                        for (tut.variants) |v| if (std.mem.eql(u8, v.name, id_name)) {
+                                            match_count += 1;
+                                            const inner = try self.allocator.create(Value);
+                                            inner.* = .null_val;
+                                            matched = Value{ .tagged_union = .{ .value = inner, .tag = id_name, .variants = tut.variants, .type_name = member_name } };
+                                            break;
+                                        };
+                                    },
+                                    else => {},
+                                }
+                            }
+                        }
+                        if (match_count > 1)
+                            return self.typeErrSpan("ambiguous bare variant: matches multiple members of union type", span);
+                        if (matched) |m| return m;
                     },
                     else => {},
                 }
