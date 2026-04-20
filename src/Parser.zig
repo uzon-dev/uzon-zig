@@ -1171,7 +1171,14 @@ fn parseFunctionExpr(self: *Parser) Error!*const Ast.Node {
                 return self.failSug("'called' not permitted in function bodies", "use 'as' for type annotations", binding.span.line, binding.span.col);
             try body_bindings.append(self.allocator, binding);
             _ = self.skipSeparator();
-        } else break;
+        } else {
+            // §3.8: reject `are` in function bodies with a clear message.
+            if (self.looksLikeBinding(self.pos, true) and !self.looksLikeBinding(self.pos, false)) {
+                const btok = self.tokens[self.pos];
+                return self.failSug("'are' not permitted in function bodies", "use 'is' with a list value", btok.line, btok.col);
+            }
+            break;
+        }
     }
 
     const body_expr = try self.parseExpression();
