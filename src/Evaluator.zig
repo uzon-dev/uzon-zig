@@ -88,6 +88,26 @@ pub fn currentFilename(self: *const Evaluator) ?[]const u8 {
 /// becomes "m.Point" after `m is struct "./mod"`. This preserves the declaring
 /// scope's identity and makes nominal identity checks (both `as` re-stamping
 /// and cross-file `is` comparison) behave correctly.
+fn rewriteTypeExpr(alloc: std.mem.Allocator, te: Ast.TypeExpr, rename: *const std.StringHashMapUnmanaged([]const u8)) Ast.TypeExpr {
+    return switch (te.data) {
+        .name => |n| blk: {
+            if (rename.get(n)) |new_name| break :blk Ast.TypeExpr{ .data = .{ .name = new_name }, .span = te.span };
+            break :blk te;
+        },
+        .list => |inner| blk: {
+            const new_inner = alloc.create(Ast.TypeExpr) catch break :blk te;
+            new_inner.* = rewriteTypeExpr(alloc, inner.*, rename);
+            break :blk Ast.TypeExpr{ .data = .{ .list = new_inner }, .span = te.span };
+        },
+        .tuple => |types| blk: {
+            const new_types = alloc.alloc(Ast.TypeExpr, types.len) catch break :blk te;
+            for (types, 0..) |t, i| new_types[i] = rewriteTypeExpr(alloc, t, rename);
+            break :blk Ast.TypeExpr{ .data = .{ .tuple = new_types }, .span = te.span };
+        },
+        else => te,
+    };
+}
+
 fn rewriteImportedTypeNames(alloc: std.mem.Allocator, v: Value, rename: *const std.StringHashMapUnmanaged([]const u8)) Value {
     const mapName = struct {
         fn f(r: *const std.StringHashMapUnmanaged([]const u8), name: ?[]const u8) ?[]const u8 {
@@ -122,16 +142,37 @@ fn rewriteImportedTypeNames(alloc: std.mem.Allocator, v: Value, rename: *const s
             new_inner.* = rewriteImportedTypeNames(alloc, tu.value.*, rename);
             break :blk Value{ .tagged_union = .{ .value = new_inner, .tag = tu.tag, .variants = tu.variants, .type_name = mapName(rename, tu.type_name) } };
         },
-        .function => |f| Value{ .function = .{
-            .params = f.params,
-            .return_type = f.return_type,
-            .body_bindings = f.body_bindings,
-            .body_expr = f.body_expr,
-            .captured_keys = f.captured_keys,
-            .captured_values = f.captured_values,
-            .captured_types = f.captured_types,
-            .type_name = mapName(rename, f.type_name),
-        } },
+        .function => |f| blk: {
+            // §7.3: function signatures that reference a renamed nominal type must also
+            // be rewritten so parameter/return type checks against qualified-name
+            // struct values succeed when the function is called through the import.
+            const new_params = alloc.alloc(Ast.FunctionParam, f.params.len) catch break :blk v;
+            for (f.params, 0..) |p, i| new_params[i] = .{
+                .name = p.name,
+                .type_expr = rewriteTypeExpr(alloc, p.type_expr, rename),
+                .default = p.default,
+                .span = p.span,
+            };
+            const new_captured_values = alloc.alloc(Value, f.captured_values.len) catch break :blk v;
+            for (f.captured_values, 0..) |cv, i| new_captured_values[i] = rewriteImportedTypeNames(alloc, cv, rename);
+            const new_captured_types = alloc.alloc(val.TypeDef, f.captured_types.len) catch break :blk v;
+            for (f.captured_types, 0..) |td, i| {
+                new_captured_types[i] = .{
+                    .name = mapName(rename, td.name) orelse td.name,
+                    .kind = td.kind,
+                };
+            }
+            break :blk Value{ .function = .{
+                .params = new_params,
+                .return_type = rewriteTypeExpr(alloc, f.return_type, rename),
+                .body_bindings = f.body_bindings,
+                .body_expr = f.body_expr,
+                .captured_keys = f.captured_keys,
+                .captured_values = new_captured_values,
+                .captured_types = new_captured_types,
+                .type_name = mapName(rename, f.type_name),
+            } };
+        },
         else => v,
     };
 }
