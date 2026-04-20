@@ -136,6 +136,11 @@ pub const Node = struct {
         from_enum: struct { value: *const Node, variants: []const []const u8 },
         from_union: struct { value: *const Node, types: []const TypeExpr },
         named_variant: struct { value: *const Node, tag: []const u8, variants: []const VariantDef },
+        /// Parser-synthesized placeholder that resolves to the default value of a named
+        /// type (§3.6). Used where a default must be emitted but the default of a
+        /// user-named type isn't knowable at parse time — e.g. the first variant's
+        /// inner default in `parseStandaloneTaggedUnion`.
+        type_default: struct { type_expr: TypeExpr },
 
         // Compounds (§3)
         struct_literal: struct { fields: []const Binding },

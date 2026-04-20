@@ -339,6 +339,7 @@ pub fn evalNode(self: *Evaluator, node: *const Ast.Node, scope: *Scope, exclude:
 
         .type_annotation => |ta| eval_types.evalTypeAnnotation(self, ta.expr, &ta.type_expr, scope, exclude, node.span),
         .conversion => |cv| eval_types.evalConversion(self, cv.expr, &cv.type_expr, scope, exclude, node.span),
+        .type_default => |td| eval_types.evalTypeDefault(self, &td.type_expr, scope, node.span),
 
         .from_enum => |fe| eval_exprs.evalFromEnum(self, fe.value, fe.variants, scope, exclude),
         .from_union => |fu| eval_exprs.evalFromUnion(self, fu.value, fu.types, scope, exclude),

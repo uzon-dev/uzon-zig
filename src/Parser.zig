@@ -1094,11 +1094,10 @@ fn defaultForTypeExpr(self: *Parser, te: Ast.TypeExpr, s: Ast.Span) Error!*const
             if (std.mem.eql(u8, n, "null")) {
                 return self.node(.null_literal, s);
             }
-            // Named type — defer to evaluator via a type-annotation on identifier.
-            // Since we cannot know the default of a named user type at parse time,
-            // emit a `null` placeholder that the evaluator will adopt via `as Name`.
-            const null_node = try self.node(.null_literal, s);
-            return self.node(.{ .type_annotation = .{ .expr = null_node, .type_expr = te } }, s);
+            // Named type — defer to evaluator. The default of a user-named type
+            // isn't knowable at parse time, so emit a `type_default` node that
+            // the evaluator resolves via `computeNamedDefault`.
+            return self.node(.{ .type_default = .{ .type_expr = te } }, s);
         },
         .null_type => return self.node(.null_literal, s),
         .list => return self.node(.{ .list_literal = .{ .elements = &.{} } }, s),
@@ -1108,10 +1107,7 @@ fn defaultForTypeExpr(self: *Parser, te: Ast.TypeExpr, s: Ast.Span) Error!*const
             for (elems, 0..) |et, i| out[i] = try self.defaultForTypeExpr(et, s);
             return self.node(.{ .tuple_literal = .{ .elements = out } }, s);
         },
-        .path => {
-            const null_node = try self.node(.null_literal, s);
-            return self.node(.{ .type_annotation = .{ .expr = null_node, .type_expr = te } }, s);
-        },
+        .path => return self.node(.{ .type_default = .{ .type_expr = te } }, s),
     }
 }
 

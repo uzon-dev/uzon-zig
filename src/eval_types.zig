@@ -16,8 +16,28 @@ pub fn isBuiltinTypeName(name: []const u8) bool {
     return false;
 }
 
+/// §3.6 default table: resolve a parser-synthesized `type_default` placeholder
+/// to the default value of its type expression.
+pub fn evalTypeDefault(self: *Evaluator, type_expr: *const Ast.TypeExpr, scope: *Scope, span: Ast.Span) EvalError!Value {
+    return switch (type_expr.data) {
+        .name => |n| computeNamedDefault(self, n, scope, span),
+        .path => |segments| {
+            const resolved = resolvePathTypeName(self, segments, type_expr.*, scope) orelse
+                return self.typeErrSpan("unknown type in default computation", span);
+            return computeNamedDefault(self, resolved, scope, span);
+        },
+        .null_type => .null_val,
+        .list => |inner| Value{ .list = .{ .elements = &.{}, .element_type = try typeExprToString(self, inner.*) } },
+        .tuple => |elems| blk: {
+            const out = try self.allocator.alloc(Value, elems.len);
+            for (elems, 0..) |*et, i| out[i] = try evalTypeDefault(self, et, scope, span);
+            break :blk Value{ .tuple = .{ .elements = out } };
+        },
+    };
+}
+
 /// §3.6 default table: compute the default value of a named type. Used when the
-/// parser emits a `null as T` placeholder that must resolve to T's default.
+/// parser emits a `type_default` placeholder that must resolve to T's default.
 pub fn computeNamedDefault(self: *Evaluator, type_name: []const u8, scope: *Scope, span: Ast.Span) EvalError!Value {
     if (h.parseIntegerTypeName(type_name)) |t| return Value{ .integer = .{ .value = 0, .type_ann = t, .explicit = true } };
     if (h.parseFloatTypeName(type_name)) |t| return Value{ .float_val = .{ .value = 0.0, .type_ann = t, .explicit = true } };
@@ -190,15 +210,7 @@ pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_exp
                         has_null = true;
                         break;
                     };
-                    // §3.6: if the union has no null member, `null as U` is the
-                    // parser's default-placeholder for default-of-U — recursively
-                    // compute the default from the first member.
-                    if (!has_null) {
-                        const inner = try computeNamedDefault(self, ut.types[0], scope, span);
-                        const vp = try self.allocator.create(Value);
-                        vp.* = inner;
-                        return Value{ .union_val = .{ .value = vp, .types = ut.types, .type_name = type_name } };
-                    }
+                    if (!has_null) return self.typeErr("cannot annotate null as union type without null member", span.line, span.col);
                 },
                 .function_type, .list_type => return self.typeErr("cannot annotate null as this type", span.line, span.col),
                 .tagged_union_type => {},

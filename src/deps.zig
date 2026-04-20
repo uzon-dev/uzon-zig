@@ -154,7 +154,7 @@ pub fn checkFunctionCallDag(
 /// Calls `visitor` on every child node of `node`, passing through `ctx`.
 fn visitChildren(node: *const Ast.Node, ctx: anytype, visitor: anytype) void {
     switch (node.kind) {
-        .identifier, .integer_literal, .float_literal, .bool_literal, .null_literal, .undefined_literal, .inf_literal, .nan_literal, .env_ref, .struct_import, .type_pattern => {},
+        .identifier, .integer_literal, .float_literal, .bool_literal, .null_literal, .undefined_literal, .inf_literal, .nan_literal, .env_ref, .struct_import, .type_pattern, .type_default => {},
         .binary_op => |bo| {
             visitor(bo.left, ctx);
             visitor(bo.right, ctx);
@@ -266,6 +266,7 @@ fn typeDepVisitor(node: *const Ast.Node, ctx: TypeDepCtx) void {
             collectTypeExprDeps(ctx.allocator, &cv.type_expr, ctx.called_to_idx, ctx.deps);
             typeDepVisitor(cv.expr, ctx);
         },
+        .type_default => |td| collectTypeExprDeps(ctx.allocator, &td.type_expr, ctx.called_to_idx, ctx.deps),
         else => visitChildren(node, ctx, typeDepVisitor),
     }
 }
