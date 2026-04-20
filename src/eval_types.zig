@@ -112,6 +112,12 @@ pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_exp
         .name => |n| n,
         .list => |inner_type| return annotateList(self, expr_node, inner_type, value, scope, span),
         .path => |segments| return annotatePath(self, expr_node, segments, type_expr, value, scope, exclude, span),
+        .tuple => {
+            if (value.isUndefined()) return .undefined;
+            // §6.1: null does not conform to a tuple type.
+            if (value == .null_val) return self.typeErrSpan("cannot annotate null as tuple type", span);
+            return value;
+        },
         else => {
             if (value.isUndefined()) return .undefined;
             return value;
