@@ -424,7 +424,9 @@ fn stampNamedType(self: *Evaluator, expr_node: *const Ast.Node, td: *const val.T
                         }
                         new_values[ti] = fval;
                         if (!fval.isNull() and !fval.isUndefined()) {
-                            if (!std.mem.eql(u8, fval.typeName(), f.type_category))
+                            // §3.2.1: a deferred-null field (`x is null` with no `as T`) accepts any type per instance.
+                            const deferred_null = f.type_annotation == null and std.mem.eql(u8, f.type_category, "null");
+                            if (!deferred_null and !std.mem.eql(u8, fval.typeName(), f.type_category))
                                 return self.typeErr("struct field type does not match named type definition", span.line, span.col);
                             if (f.type_annotation) |ta| try validateFieldTypeAnnotation(self, fval, ta, ti, new_values, span);
                         }
