@@ -749,7 +749,14 @@ pub fn evalNamedVariant(self: *Evaluator, value_node: *const Ast.Node, tag: []co
                         }
                     }
                 }
-                return self.typeErrSpan("tagged union type reuse requires known type", value_node.span);
+                // §3.7: `expr named Variant` without `as T` — defer to outer
+                // context by emitting a shorthand sentinel. A struct-field
+                // stamp, list-element adoption, function-arg adoption, or
+                // outer `as T` will resolve it via resolveShorthandAgainstType.
+                const vp = try self.allocator.create(Value);
+                vp.* = value;
+                self.shorthand_inner_ast.put(self.allocator, @intFromPtr(vp), value_node) catch {};
+                return Value{ .tagged_union = .{ .value = vp, .tag = tag, .variants = &.{}, .type_name = null } };
             },
         }
     }
