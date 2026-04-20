@@ -427,12 +427,19 @@ fn parseEquality(self: *Parser) Error!*const Ast.Node {
         _ = self.advance();
         self.skipNewlines();
         const right = if (is_name_or_type) blk: {
+            // §5.2: `is type` / `is not type` accepts compound type expressions on the RHS
+            // ([T], (T,T,…), null). For those, parse a full TypeExpr and wrap as type_pattern.
+            const accepts_compound = (binary_op == .is_type or binary_op == .is_not_type);
+            if (accepts_compound and (self.at(.l_bracket) or self.at(.l_paren) or self.at(.null_))) {
+                const te_span = self.span();
+                const te = try self.parseTypeExpr();
+                break :blk try self.node(.{ .type_pattern = .{ .type_expr = te } }, te_span);
+            }
             const t = self.advance();
             // §7.3: `is type` / `is not type` accepts a qualified type name like `m.Point`
             // so imported nominal types can be tested. `is named` / `is not named` still
             // takes a plain variant name (no dots).
-            const accepts_path = (binary_op == .is_type or binary_op == .is_not_type);
-            if (accepts_path and self.at(.dot)) {
+            if (accepts_compound and self.at(.dot)) {
                 var buf = std.ArrayListUnmanaged(u8){};
                 try buf.appendSlice(self.allocator, t.lexeme);
                 while (self.at(.dot)) {

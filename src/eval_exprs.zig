@@ -322,7 +322,7 @@ fn adoptToTypeExpr(allocator: std.mem.Allocator, v: Value, te: Ast.TypeExpr) Val
 }
 
 /// Check if a value matches a compound type expression.
-fn valueMatchesTypeExpr(v: Value, te: Ast.TypeExpr) bool {
+pub fn valueMatchesTypeExpr(v: Value, te: Ast.TypeExpr) bool {
     return switch (te.data) {
         .name => |name| h.valueMatchesType(v, name),
         .list => |inner| blk: {

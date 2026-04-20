@@ -555,11 +555,12 @@ pub fn evalUnaryOp(self: *Evaluator, op: Ast.UnaryOp, node: *const Ast.Node, sco
 fn evalIsType(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
     const value = try self.evalNode(ln, scope, exclude);
     if (value.isUndefined()) return self.rtErrSpan("undefined value in 'is type' check", ln.span);
-    const type_name = switch (rn.kind) {
-        .identifier => |id| id.name,
+    const unwrapped = value.unwrapTransparent();
+    const matches = switch (rn.kind) {
+        .identifier => |id| h.valueMatchesType(unwrapped, id.name),
+        .type_pattern => |tp| @import("eval_exprs.zig").valueMatchesTypeExpr(unwrapped, tp.type_expr),
         else => return self.typeErrSpan("'is type' requires type name", span),
     };
-    const matches = h.valueMatchesType(value.unwrapTransparent(), type_name);
     return Value.boolean(if (op == .is_type) matches else !matches);
 }
 
