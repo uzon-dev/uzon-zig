@@ -426,23 +426,77 @@ pub fn adoptFloatType(left: Float, right: Float) FloatType {
 }
 
 /// Format float per §5.11.2 spec rules.
+/// §5.11.2 Float → string. ECMAScript-style shortest round-trip representation
+/// with UZON-specific requirements: result always contains '.', scientific
+/// notation uses `eN` (no sign on positive exponent), `.0` suffix when integer.
 pub fn formatFloat(allocator: std.mem.Allocator, value: f64) ![]const u8 {
-    if (std.math.isInf(value)) return if (std.math.signbit(value)) "-inf" else "inf";
     if (std.math.isNan(value)) return "nan";
-    if (value == 0.0 and std.math.signbit(value)) return "-0.0";
-    if (value == 0.0) return "0.0";
+    if (std.math.isInf(value)) return if (std.math.signbit(value)) "-inf" else "inf";
+    if (value == 0.0) return if (std.math.signbit(value)) "-0.0" else "0.0";
 
-    var buf: [350]u8 = undefined;
-    const s = std.fmt.bufPrint(&buf, "{d}", .{value}) catch return error.OutOfMemory;
-    const result = try allocator.dupe(u8, s);
-    if (std.mem.indexOfScalar(u8, result, '.') == null and std.mem.indexOfScalar(u8, result, 'e') == null) {
-        const with_dot = try allocator.alloc(u8, result.len + 2);
-        @memcpy(with_dot[0..result.len], result);
-        with_dot[result.len] = '.';
-        with_dot[result.len + 1] = '0';
-        return with_dot;
+    // Zig's scientific renderer gives shortest round-trip as "<mantissa>e<exp>",
+    // e.g. `3.14e0`, `1e100`, `1.5e-6`. Parse it, then reformat per ECMAScript rules.
+    var raw_buf: [64]u8 = undefined;
+    const raw = std.fmt.float.render(&raw_buf, value, .{ .mode = .scientific }) catch return error.OutOfMemory;
+
+    const neg = raw[0] == '-';
+    const body = if (neg) raw[1..] else raw;
+    const e_pos = std.mem.indexOfScalar(u8, body, 'e') orelse return error.OutOfMemory;
+    const mantissa_raw = body[0..e_pos];
+    const exp = std.fmt.parseInt(i32, body[e_pos + 1 ..], 10) catch return error.OutOfMemory;
+
+    // Split mantissa into integer and fraction digits (without the '.').
+    var digit_buf: [64]u8 = undefined;
+    const dot_idx = std.mem.indexOfScalar(u8, mantissa_raw, '.');
+    const digits: []const u8 = if (dot_idx) |di| blk: {
+        @memcpy(digit_buf[0..di], mantissa_raw[0..di]);
+        @memcpy(digit_buf[di .. mantissa_raw.len - 1], mantissa_raw[di + 1 ..]);
+        break :blk digit_buf[0 .. mantissa_raw.len - 1];
+    } else mantissa_raw;
+    const dot_offset: i32 = if (dot_idx) |di| @intCast(di) else @intCast(mantissa_raw.len);
+
+    // Position of decimal point relative to start of `digits` (0 = before digits[0]).
+    const point: i32 = dot_offset + exp;
+    // n = position of leading digit in ECMAScript terms (10^(n-1) <= |v| < 10^n).
+    const n: i32 = point;
+
+    const sign_prefix: []const u8 = if (neg) "-" else "";
+
+    var out = std.ArrayListUnmanaged(u8){};
+    try out.appendSlice(allocator, sign_prefix);
+
+    if (n >= 1 and n <= 21) {
+        // Decimal, integer/mixed form. Place decimal point at `point`.
+        const p: usize = @intCast(point);
+        if (p >= digits.len) {
+            try out.appendSlice(allocator, digits);
+            try out.appendNTimes(allocator, '0', p - digits.len);
+            try out.appendSlice(allocator, ".0");
+        } else {
+            try out.appendSlice(allocator, digits[0..p]);
+            try out.append(allocator, '.');
+            try out.appendSlice(allocator, digits[p..]);
+        }
+    } else if (n >= -5 and n <= 0) {
+        // Decimal, pure fraction form: 0.<zeros><digits>
+        try out.appendSlice(allocator, "0.");
+        const leading_zeros: usize = @intCast(-point);
+        try out.appendNTimes(allocator, '0', leading_zeros);
+        try out.appendSlice(allocator, digits);
+    } else {
+        // Scientific: <d>.<rest>e<exp>  (always include '.0' when mantissa is single digit)
+        try out.append(allocator, digits[0]);
+        if (digits.len > 1) {
+            try out.append(allocator, '.');
+            try out.appendSlice(allocator, digits[1..]);
+        } else {
+            try out.appendSlice(allocator, ".0");
+        }
+        try out.append(allocator, 'e');
+        try std.fmt.format(out.writer(allocator), "{d}", .{n - 1});
     }
-    return result;
+
+    return out.toOwnedSlice(allocator);
 }
 
 /// Default value for speculative branch narrowing.
