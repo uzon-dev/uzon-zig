@@ -258,7 +258,7 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
             // §3.2: when `called X` names a type already registered, both definitions MUST describe
             // the same shape — otherwise it is a duplicate type name conflict.
             if (existing != null) {
-                if (eval_types.buildTypeDef(self, type_name, value)) |td| {
+                if (eval_types.buildTypeDef(self, type_name, value, binding.value)) |td| {
                     if (!eval_types.typeDefsEquivalent(existing.?, &td)) {
                         self.collected_errors.append(self.allocator, UzonError.typeError(
                             self.allocator, "duplicate type name", binding.span.line, binding.span.col,
@@ -268,7 +268,7 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
                     }
                 }
             } else {
-                if (eval_types.buildTypeDef(self, type_name, value)) |td|
+                if (eval_types.buildTypeDef(self, type_name, value, binding.value)) |td|
                     try scope.defineType(type_name, td);
             }
 
@@ -482,9 +482,33 @@ fn evalMemberAccess(self: *Evaluator, object_node: *const Ast.Node, member: []co
 
 // ── Compound literal evaluation ──────────────────────────────
 
+/// §3.2.1: a struct field binding of the form `name is null as T` (any T)
+/// declares a typed-null field. Only match the exact shape: a direct
+/// type_annotation whose expression is a null literal. Anything else
+/// (e.g. `null as T` inside an if/case/call) flows through normal eval
+/// and remains subject to §6.1.
+fn isTypedNullDecl(binding: Ast.Binding) bool {
+    const v = binding.value;
+    if (v.kind != .type_annotation) return false;
+    return v.kind.type_annotation.expr.kind == .null_literal;
+}
+
 fn evalStructLiteral(self: *Evaluator, fields: []const Ast.Binding, parent_scope: *Scope) EvalError!Value {
     var child_scope = Scope.withParent(self.allocator, parent_scope);
-    try self.evalBindings(fields, &child_scope, parent_scope);
+
+    // §3.2.1: detect typed-null field declarations (`field is null as T`) and
+    // pre-define them as null_val. This pattern is valid *only* in struct field
+    // position — §6.1 still rejects `null as <primitive>` in general expressions
+    // and top-level bindings.
+    var filtered = std.ArrayListUnmanaged(Ast.Binding){};
+    for (fields) |f| {
+        if (isTypedNullDecl(f)) {
+            try child_scope.define(f.name, .null_val);
+        } else {
+            try filtered.append(self.allocator, f);
+        }
+    }
+    try self.evalBindings(filtered.items, &child_scope, parent_scope);
 
     if (child_scope.types.count() > 0) {
         self.last_import_types = .{};

@@ -142,6 +142,9 @@ pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_exp
                     return self.typeErr("integer value out of range for type annotation", span.line, span.col);
                 break :blk Value{ .integer = .{ .value = iv.value, .type_ann = int_type, .explicit = true } };
             },
+            // §6.1: `null as <primitive>` is a type error in general expressions.
+            // The struct-field-declaration exception (§3.2.1 typed-null) is handled
+            // in evalStructLiteral — those fields never reach this code path.
             else => self.typeErr("cannot annotate non-integer as integer type", span.line, span.col),
         };
     }
@@ -426,10 +429,20 @@ fn stampNamedType(self: *Evaluator, expr_node: *const Ast.Node, td: *const val.T
                         }
                         new_values[ti] = fval;
                         if (!fval.isNull() and !fval.isUndefined()) {
-                            // §3.2.1: a deferred-null field (`x is null` with no `as T`) accepts any type per instance.
-                            const deferred_null = f.type_annotation == null and std.mem.eql(u8, f.type_category, "null");
-                            if (!deferred_null and !std.mem.eql(u8, fval.typeName(), f.type_category))
+                            // §3.2.1: deferred-null (`x is null`) accepts any type per instance.
+                            // Typed-null (`x is null as T`) fixes the underlying type to T —
+                            // the overriding value must match T, not the "null" category.
+                            const is_null_category = std.mem.eql(u8, f.type_category, "null");
+                            const deferred_null = is_null_category and f.type_annotation == null;
+                            const typed_null = is_null_category and f.type_annotation != null;
+                            if (!deferred_null and !typed_null and !std.mem.eql(u8, fval.typeName(), f.type_category))
                                 return self.typeErr("struct field type does not match named type definition", span.line, span.col);
+                            if (typed_null) {
+                                const adopted = h.adoptToType(fval, f.type_annotation.?);
+                                if (!h.valueMatchesType(adopted, f.type_annotation.?))
+                                    return self.typeErr("struct field type does not match typed-null declaration", span.line, span.col);
+                                new_values[ti] = adopted;
+                            }
                             if (f.type_annotation) |ta| try validateFieldTypeAnnotation(self, fval, ta, ti, new_values, span);
                         }
                     } else {
@@ -772,18 +785,40 @@ pub fn typeDefsEquivalent(a: *const val.TypeDef, b: *const val.TypeDef) bool {
     };
 }
 
-pub fn buildTypeDef(self: *Evaluator, name: []const u8, value: Value) ?val.TypeDef {
+/// Extract `T` from a field AST of the form `name is null as T`.
+/// Returns null if the binding is not a typed-null declaration.
+fn typedNullAnnotation(binding: Ast.Binding) ?[]const u8 {
+    const v = binding.value;
+    if (v.kind != .type_annotation) return null;
+    const ta = v.kind.type_annotation;
+    if (ta.expr.kind != .null_literal) return null;
+    return switch (ta.type_expr.data) {
+        .name => |n| n,
+        else => null,
+    };
+}
+
+pub fn buildTypeDef(self: *Evaluator, name: []const u8, value: Value, ast: ?*const Ast.Node) ?val.TypeDef {
     return switch (value) {
         .enum_val => |e| val.TypeDef{ .name = name, .kind = .{ .enum_type = .{ .variants = e.variants } } },
         .union_val => |u| val.TypeDef{ .name = name, .kind = .{ .union_type = .{ .types = u.types } } },
         .tagged_union => |tu| val.TypeDef{ .name = name, .kind = .{ .tagged_union_type = .{ .variants = tu.variants } } },
         .struct_val => |s| blk: {
             const fields = self.allocator.alloc(val.TypeDef.FieldInfo, s.keys.len) catch break :blk val.TypeDef{ .name = name, .kind = .{ .struct_type = .{ .fields = &.{} } } };
+            // If the declaration AST is a struct_literal, we can recover typed-null
+            // annotations (`field is null as T`) that collapse to a bare null value.
+            const field_asts: []const Ast.Binding = if (ast) |a| (if (a.kind == .struct_literal) a.kind.struct_literal.fields else &.{}) else &.{};
             for (s.keys, s.values, 0..) |key, fv, fi| {
+                const typed_null_ann: ?[]const u8 = if (fv == .null_val) blk2: {
+                    for (field_asts) |fb| if (std.mem.eql(u8, fb.name, key)) {
+                        break :blk2 typedNullAnnotation(fb);
+                    };
+                    break :blk2 null;
+                } else null;
                 fields[fi] = .{
                     .name = key,
                     .type_category = fv.typeName(),
-                    .type_annotation = switch (fv) {
+                    .type_annotation = if (typed_null_ann) |tn| tn else switch (fv) {
                         .integer => |iv| if (iv.explicit) h.intTypeNameAlloc(self.allocator, iv.type_ann) else null,
                         .float_val => |fvv| if (fvv.explicit) h.floatTypeName(fvv.type_ann) else null,
                         .struct_val => |sv| sv.type_name,

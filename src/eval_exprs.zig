@@ -771,10 +771,12 @@ pub fn evalNamedVariant(self: *Evaluator, value_node: *const Ast.Node, tag: []co
 pub fn evalStructOverride(self: *Evaluator, base_node: *const Ast.Node, overrides_node: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
     const base = try self.evalNode(base_node, scope, exclude);
     if (base.isUndefined()) return self.rtErrSpan("cannot override undefined", base_node.span);
-    const bs = switch (base) {
-        .struct_val => |s| s,
+    switch (base) {
+        .struct_val => {},
+        .tagged_union => return self.typeErrSug("'with' requires a struct, not a tagged union", "apply to the inner struct explicitly", span.line, span.col),
         else => return self.typeErrSpan("'with' requires struct base", span),
-    };
+    }
+    const bs = base.struct_val;
     const overrides = try self.evalNode(overrides_node, scope, exclude);
     const os = switch (overrides) {
         .struct_val => |s| s,
@@ -785,16 +787,18 @@ pub fn evalStructOverride(self: *Evaluator, base_node: *const Ast.Node, override
     for (os.keys) |key| if (bs.get(key) == null)
         return self.typeErrSug("'with' cannot add new field", "use 'plus' to add new fields to a struct", span.line, span.col);
 
-    return applyOverrides(self, bs, os, bs.type_name, span);
+    return applyOverrides(self, bs, os, bs.type_name, scope, span);
 }
 
 pub fn evalStructExtension(self: *Evaluator, base_node: *const Ast.Node, ext_node: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
     const base = try self.evalNode(base_node, scope, exclude);
     if (base.isUndefined()) return self.rtErrSpan("cannot extend undefined", base_node.span);
-    const bs = switch (base) {
-        .struct_val => |s| s,
+    switch (base) {
+        .struct_val => {},
+        .tagged_union => return self.typeErrSug("'plus' requires a struct, not a tagged union", "apply to the inner struct explicitly", span.line, span.col),
         else => return self.typeErrSpan("'plus' requires struct base", span),
-    };
+    }
+    const bs = base.struct_val;
     const extension = try self.evalNode(ext_node, scope, exclude);
     const es = switch (extension) {
         .struct_val => |s| s,
@@ -809,6 +813,7 @@ pub fn evalStructExtension(self: *Evaluator, base_node: *const Ast.Node, ext_nod
         return self.typeErrSug("'plus' must add at least one new field", "use 'with' to override existing fields without adding new ones", span.line, span.col);
 
     // Apply overrides to existing fields
+    const field_infos = resolveFieldInfos(scope, bs.type_name);
     const total = bs.keys.len + new_count;
     const new_keys = try self.allocator.alloc([]const u8, total);
     const new_values = try self.allocator.alloc(Value, total);
@@ -818,7 +823,7 @@ pub fn evalStructExtension(self: *Evaluator, base_node: *const Ast.Node, ext_nod
         new_keys[i] = key;
         if (es.get(key)) |ov| {
             if (ov.isUndefined()) return self.rtErrSpan("extension field evaluates to undefined", span);
-            new_values[i] = try applyFieldOverride(self, base_val, ov, span);
+            new_values[i] = try applyFieldOverride(self, base_val, ov, lookupFieldInfo(field_infos, key), span);
         } else {
             new_values[i] = base_val;
         }
@@ -835,17 +840,34 @@ pub fn evalStructExtension(self: *Evaluator, base_node: *const Ast.Node, ext_nod
         }
     }
 
+    // §3.2.2: `plus` always produces a new type — the base's name is dropped.
     return Value{ .struct_val = .{ .keys = new_keys, .values = new_values } };
 }
 
-fn applyOverrides(self: *Evaluator, bs: val.Struct, os: val.Struct, preserve_type: ?[]const u8, span: Ast.Span) EvalError!Value {
+fn resolveFieldInfos(scope: *Scope, type_name: ?[]const u8) ?[]const val.TypeDef.FieldInfo {
+    const tn = type_name orelse return null;
+    const td = scope.getType(tn) orelse return null;
+    return switch (td.kind) {
+        .struct_type => |st| st.fields,
+        else => null,
+    };
+}
+
+fn lookupFieldInfo(fields: ?[]const val.TypeDef.FieldInfo, name: []const u8) ?val.TypeDef.FieldInfo {
+    const fs = fields orelse return null;
+    for (fs) |f| if (std.mem.eql(u8, f.name, name)) return f;
+    return null;
+}
+
+fn applyOverrides(self: *Evaluator, bs: val.Struct, os: val.Struct, preserve_type: ?[]const u8, scope: *Scope, span: Ast.Span) EvalError!Value {
+    const field_infos = resolveFieldInfos(scope, preserve_type);
     const new_keys = try self.allocator.alloc([]const u8, bs.keys.len);
     const new_values = try self.allocator.alloc(Value, bs.values.len);
     for (bs.keys, bs.values, 0..) |key, base_val, i| {
         new_keys[i] = key;
         if (os.get(key)) |ov| {
             if (ov.isUndefined()) return self.rtErrSpan("override field evaluates to undefined", span);
-            new_values[i] = try applyFieldOverride(self, base_val, ov, span);
+            new_values[i] = try applyFieldOverride(self, base_val, ov, lookupFieldInfo(field_infos, key), span);
         } else {
             new_values[i] = base_val;
         }
@@ -853,8 +875,30 @@ fn applyOverrides(self: *Evaluator, bs: val.Struct, os: val.Struct, preserve_typ
     return Value{ .struct_val = .{ .keys = new_keys, .values = new_values, .type_name = preserve_type } };
 }
 
-fn applyFieldOverride(self: *Evaluator, base_val: Value, ov: Value, span: Ast.Span) EvalError!Value {
-    if (base_val.isNull() or ov.isNull()) return ov;
+fn applyFieldOverride(self: *Evaluator, base_val: Value, ov: Value, field_info: ?val.TypeDef.FieldInfo, span: Ast.Span) EvalError!Value {
+    // §3.2.1: override with null is always valid (reset mechanism).
+    if (ov.isNull()) return ov;
+
+    // §3.2.1: consult the named type's FieldInfo before falling back to value-shape checks.
+    // This distinguishes typed-null (`x is null as i32`) from deferred-null (`x is null`).
+    if (field_info) |fi| {
+        if (std.mem.eql(u8, fi.type_category, "null")) {
+            if (fi.type_annotation) |ann| {
+                // Typed-null: override must match the declared type.
+                const adopted = h.adoptToType(ov, ann);
+                if (!h.valueMatchesType(adopted, ann))
+                    return self.typeErrSpan("typed-null field override must match declared type or be null", span);
+                return adopted;
+            }
+            // Deferred-null: each construction site independently chooses the underlying type.
+            return ov;
+        }
+    }
+
+    // §3.2.1 exception: bare-null base (no FieldInfo available, e.g. anonymous struct)
+    // is bidirectionally compatible with any type.
+    if (base_val.isNull()) return ov;
+
     const adopt_type_name = if (base_val == .integer and base_val.integer.explicit)
         h.intTypeNameAlloc(self.allocator, base_val.integer.type_ann) orelse base_val.typeName()
     else if (base_val == .float_val and base_val.float_val.explicit)
