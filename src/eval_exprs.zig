@@ -598,6 +598,21 @@ pub fn resolveShorthandAgainstType(self: *Evaluator, sentinel: Value, td: *const
                 }
                 if (!adopted.isNull() and !adopted.isUndefined()) {
                     adopted = h.adoptToType(adopted, vtn);
+                    // The variant declaration already establishes the inner type, so
+                    // don't mark a primitive as explicit — otherwise stringify emits a
+                    // redundant `as T` inside the tagged union, which is ungrammatical.
+                    if (adopted == .integer and adopted.integer.explicit) {
+                        if (h.parseIntegerTypeName(vtn)) |it| {
+                            if (h.intTypesMatch(adopted.integer.type_ann, it))
+                                adopted = Value{ .integer = .{ .value = adopted.integer.value, .type_ann = adopted.integer.type_ann, .explicit = false } };
+                        }
+                    }
+                    if (adopted == .float_val and adopted.float_val.explicit) {
+                        if (h.parseFloatTypeName(vtn)) |ft| {
+                            if (adopted.float_val.type_ann == ft)
+                                adopted = Value{ .float_val = .{ .value = adopted.float_val.value, .type_ann = adopted.float_val.type_ann, .explicit = false } };
+                        }
+                    }
                     // Stamp struct/tagged type_name onto adopted if it's a compound
                     if (adopted == .struct_val and adopted.struct_val.type_name == null)
                         adopted = Value{ .struct_val = .{ .keys = adopted.struct_val.keys, .values = adopted.struct_val.values, .type_name = vtn } };
@@ -676,8 +691,11 @@ pub fn evalFromUnion(self: *Evaluator, value_node: *const Ast.Node, types: []con
 
 pub fn evalNamedVariant(self: *Evaluator, value_node: *const Ast.Node, tag: []const u8, variants: []const Ast.VariantDef, scope: *Scope, exclude: ?[]const u8) EvalError!Value {
     // §3.7.1: For `expr as T named Variant` where T is a named tagged union,
-    // evaluate `expr` alone (don't stamp it as T — that would reject a tagged
-    // union value whose type_name differs). Then wrap with T's variants.
+    // delegate to the shorthand resolver so the full form and the shorthand
+    // form (`Variant expr as T`) share one resolution path. This gives us
+    // bare-id variant lookup, nested-sentinel recursion, struct-payload
+    // stamping, and compound-type adoption for free, and guarantees the two
+    // forms produce equivalent results per §3.7.
     if (variants.len == 0 and value_node.kind == .type_annotation) {
         const ta = value_node.kind.type_annotation;
         if (ta.type_expr.data == .name) {
@@ -687,32 +705,17 @@ pub fn evalNamedVariant(self: *Evaluator, value_node: *const Ast.Node, tag: []co
                     const tut = td.kind.tagged_union_type;
                     if (!h.isValidVariantTag(tut.variants, tag))
                         return self.typeErrSpan("unknown variant name in tagged union type reuse", value_node.span);
-                    var inner_value = try self.evalNode(ta.expr, scope, exclude);
-                    // §3.7: if inner is undefined and `ta.expr` is a bare identifier,
-                    // resolve it as a variant of the matched variant's declared type
-                    // (another tagged union or enum).
-                    if (inner_value.isUndefined() and ta.expr.kind == .identifier) {
-                        const id_name = ta.expr.kind.identifier.name;
-                        for (tut.variants) |vi| if (std.mem.eql(u8, vi.name, tag)) {
-                            if (vi.type_name) |vtn| if (scope.getType(vtn)) |inner_td| switch (inner_td.kind) {
-                                .enum_type => |et| for (et.variants) |ev| if (std.mem.eql(u8, ev, id_name)) {
-                                    inner_value = Value{ .enum_val = .{ .value = id_name, .variants = et.variants, .type_name = vtn } };
-                                    break;
-                                },
-                                .tagged_union_type => |itut| for (itut.variants) |iv| if (std.mem.eql(u8, iv.name, id_name)) {
-                                    const inp = try self.allocator.create(Value);
-                                    inp.* = .null_val;
-                                    inner_value = Value{ .tagged_union = .{ .value = inp, .tag = id_name, .variants = itut.variants, .type_name = vtn } };
-                                    break;
-                                },
-                                else => {},
-                            };
-                            break;
-                        };
-                    }
+                    // Evaluate inner, tolerating bare-id resolution failure
+                    // (resolveShorthandAgainstType will retry with type context).
+                    const inner_value: Value = self.evalNode(ta.expr, scope, exclude) catch blk: {
+                        self.last_error = null;
+                        break :blk .undefined;
+                    };
                     const vp = try self.allocator.create(Value);
                     vp.* = inner_value;
-                    return Value{ .tagged_union = .{ .value = vp, .tag = tag, .variants = tut.variants, .type_name = tn } };
+                    self.shorthand_inner_ast.put(self.allocator, @intFromPtr(vp), ta.expr) catch {};
+                    const sentinel = Value{ .tagged_union = .{ .value = vp, .tag = tag, .variants = &.{}, .type_name = null } };
+                    return try resolveShorthandAgainstType(self, sentinel, td, tn, scope, value_node.span);
                 }
             }
         }
