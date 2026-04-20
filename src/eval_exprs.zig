@@ -596,6 +596,9 @@ pub fn resolveShorthandAgainstType(self: *Evaluator, sentinel: Value, td: *const
                         }
                     };
                 }
+                if (adopted.isNull() and !std.mem.eql(u8, vtn, "null")) {
+                    return self.typeErrSpan("null cannot be used for variant with non-null inner type", span);
+                }
                 if (!adopted.isNull() and !adopted.isUndefined()) {
                     adopted = h.adoptToType(adopted, vtn);
                     // The variant declaration already establishes the inner type, so
