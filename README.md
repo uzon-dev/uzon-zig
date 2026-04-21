@@ -1,6 +1,6 @@
 # uzon
 
-A Zig library for parsing, evaluating, and serializing [UZON](https://uzon.dev) — a typed, human-readable data expression format.
+A Zig library for parsing, evaluating, and serializing [UZON](https://uzon.dev) — a typed configuration language.
 
 ```zig
 const uzon = @import("uzon");
