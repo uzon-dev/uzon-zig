@@ -664,7 +664,10 @@ fn unicodeToUpper(cp: u21) CaseUpper {
     if (cp < 0xC0) return .{ .cps = .{ cp, 0, 0 }, .len = 1 };
     if (cp >= 0xE0 and cp <= 0xF6) return .{ .cps = .{ cp - 0x20, 0, 0 }, .len = 1 };
     if (cp >= 0xF8 and cp <= 0xFE) return .{ .cps = .{ cp - 0x20, 0, 0 }, .len = 1 };
-    if (cp == 0xDF) return .{ .cps = .{ 'S', 'S', 0 }, .len = 2 }; // ß → SS
+    // §5.16.6: simple one-to-one folding only. ß has no one-to-one
+    // uppercase mapping — full folding would expand to "SS"/"ẞ", so
+    // return the codepoint unchanged.
+    if (cp == 0xDF) return .{ .cps = .{ cp, 0, 0 }, .len = 1 };
     if (cp == 0xFF) return .{ .cps = .{ 0x178, 0, 0 }, .len = 1 }; // ÿ → Ÿ
     if (cp >= 0x100 and cp <= 0x12F and cp % 2 == 1) return .{ .cps = .{ cp - 1, 0, 0 }, .len = 1 };
     if (cp >= 0x132 and cp <= 0x137 and cp % 2 == 1) return .{ .cps = .{ cp - 1, 0, 0 }, .len = 1 };
