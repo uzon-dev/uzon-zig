@@ -94,6 +94,40 @@ pub fn valueTypeCategory(v: Value) ?[]const u8 {
     };
 }
 
+/// §3.4: Derive a list's element type name from its value. Empty lists with no
+/// explicit `element_type` return null; non-empty lists infer from the first
+/// non-null element's default type (e.g., `[1, 2]` → "i64", `[1.0]` → "f64").
+pub fn listElementTypeName(v: Value) ?[]const u8 {
+    if (v != .list) return null;
+    const l = v.list;
+    if (l.element_type) |et| return et;
+    for (l.elements) |e| {
+        if (e == .null_val or e == .undefined) continue;
+        return switch (e) {
+            .bool_val => "bool",
+            .integer => |i| intTypeName(i.type_ann) orelse "i64",
+            .float_val => |f| @tagName(f.type_ann),
+            .string => "string",
+            else => null,
+        };
+    }
+    return null;
+}
+
+/// §3.4: If `result` is an untyped empty list and `other` has a determinable
+/// element type, return `result` with `element_type` stamped; otherwise return
+/// `result` unchanged. Used by if/case branch unification.
+pub fn propagateEmptyListElementType(result: Value, other: Value) Value {
+    if (result != .list) return result;
+    if (result.list.elements.len > 0 or result.list.element_type != null) return result;
+    const et = listElementTypeName(other) orelse return result;
+    return Value{ .list = .{
+        .elements = result.list.elements,
+        .element_type = et,
+        .type_name = result.list.type_name,
+    } };
+}
+
 /// Check branch type compatibility (§5.9). null/undefined compatible with anything; int/float cross-compatible.
 pub fn branchTypesCompatible(a: Value, b: Value) bool {
     if (a.isNull() or b.isNull()) return true;

@@ -302,13 +302,11 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
         };
 
         if (value == .list and value.list.elements.len == 0 and value.list.element_type == null) {
-            if (binding.value.kind == .list_literal) {
-                self.collected_errors.append(self.allocator, UzonError.typeError(
-                    self.allocator, "empty list requires a type annotation", binding.span.line, binding.span.col,
-                )) catch {};
-                had_errors = true;
-                continue;
-            }
+            self.collected_errors.append(self.allocator, UzonError.typeError(
+                self.allocator, "empty list requires a type annotation", binding.span.line, binding.span.col,
+            )) catch {};
+            had_errors = true;
+            continue;
         }
 
         // §4.1: an unannotated integer defaults to i64

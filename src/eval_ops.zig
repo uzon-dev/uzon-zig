@@ -229,7 +229,11 @@ fn evalRepeat(self: *Evaluator, ln: *const Ast.Node, rn: *const Ast.Node, scope:
         .list => |l| blk: {
             const elements = try self.allocator.alloc(Value, l.elements.len * count);
             for (0..count) |rep| @memcpy(elements[rep * l.elements.len .. (rep + 1) * l.elements.len], l.elements);
-            break :blk Value{ .list = .{ .elements = elements, .element_type = l.element_type } };
+            // §3.4: preserve element type even when count=0 produces an empty
+            // list. If the source list has no explicit element_type, infer it
+            // from its elements so the result carries the correct type.
+            const et = l.element_type orelse h.listElementTypeName(left);
+            break :blk Value{ .list = .{ .elements = elements, .element_type = et } };
         },
         else => self.typeErrSpan("repetition requires string or list", span),
     };

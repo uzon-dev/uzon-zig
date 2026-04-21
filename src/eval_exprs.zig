@@ -38,7 +38,7 @@ pub fn evalIfExpr(self: *Evaluator, cond_node: *const Ast.Node, then_node: *cons
                 };
                 if (!h.branchTypesCompatible(result, else_val))
                     return self.typeErrSpan("if/else branches have incompatible types", span);
-                return result;
+                return h.propagateEmptyListElementType(result, else_val);
             } else {
                 const then_val = self.evalNode(then_node, then_scope, exclude) catch |e| switch (e) {
                     error.UzonRuntime => return try self.evalNode(else_node, else_scope, exclude),
@@ -47,7 +47,7 @@ pub fn evalIfExpr(self: *Evaluator, cond_node: *const Ast.Node, then_node: *cons
                 const result = try self.evalNode(else_node, else_scope, exclude);
                 if (!h.branchTypesCompatible(then_val, result))
                     return self.typeErrSpan("if/else branches have incompatible types", span);
-                return result;
+                return h.propagateEmptyListElementType(result, then_val);
             }
         },
         else => return self.typeErrSug("if condition must be bool", "compare explicitly, e.g. 'if x > 0 then ...'", span.line, span.col),
