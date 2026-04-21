@@ -102,6 +102,15 @@ fn scanNormal(self: *Lexer) !void {
         }
     }
 
+    // §2.1: mid-file BOM (U+FEFF, encoded as EF BB BF) outside strings/comments
+    // is a syntax error. Start-of-file BOM is skipped in tokenize() before any
+    // tokens are emitted, so reaching this point with a BOM means mid-file.
+    if (c == 0xEF and self.pos + 2 < self.source.len and
+        self.source[self.pos + 1] == 0xBB and self.source[self.pos + 2] == 0xBF)
+    {
+        return self.fail("mid-file BOM outside string literal", start_line, start_col);
+    }
+
     switch (c) {
         '\n' => {
             try self.emit(.newline, "\n", start_line, start_col);
@@ -515,6 +524,12 @@ fn scanIdentifierOrKeyword(self: *Lexer, line: u32, col: u32) !void {
             if (is_bidi) {
                 return self.fail("RTL/bidi mark outside string literal", self.line, self.col);
             }
+        }
+        // §2.1: mid-identifier BOM (U+FEFF = EF BB BF) is a syntax error.
+        if (c == 0xEF and self.pos + 2 < self.source.len and
+            self.source[self.pos + 1] == 0xBB and self.source[self.pos + 2] == 0xBF)
+        {
+            return self.fail("mid-file BOM outside string literal", self.line, self.col);
         }
         self.advance();
     }
