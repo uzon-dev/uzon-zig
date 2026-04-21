@@ -991,6 +991,22 @@ fn defaultReferencesParam(node: *const Ast.Node, params: []const Ast.FunctionPar
     };
 }
 
+// §3.5 R4: evaluate a function parameter default expression using the
+// parameter's declared type as context. A bare identifier that names a
+// variant of the declared enum/tagged-union resolves to that variant.
+fn evalDefaultWithType(self: *Evaluator, node: *const Ast.Node, type_expr: *const Ast.TypeExpr, scope: *Scope) EvalError!Value {
+    if (type_expr.data == .name and node.kind == .identifier) {
+        const tn = type_expr.data.name;
+        const id_name = node.kind.identifier.name;
+        if (scope.getType(tn)) |td| {
+            if (scope.get(id_name, null) == null) {
+                if (eval_types.variantLookup(td, tn, id_name, self.allocator)) |v| return v;
+            }
+        }
+    }
+    return self.evalNode(node, scope, null);
+}
+
 pub fn evalFunctionExpr(self: *Evaluator, params: []const Ast.FunctionParam, return_type: Ast.TypeExpr, body_bindings: []const Ast.Binding, body_expr: *const Ast.Node, scope: *Scope) EvalError!Value {
     // §4.5: literal 'undefined' cannot be the function body's final expression.
     if (body_expr.kind == .undefined_literal)
@@ -1000,7 +1016,7 @@ pub fn evalFunctionExpr(self: *Evaluator, params: []const Ast.FunctionParam, ret
         // Defaults must not reference any parameter of the same function.
         if (defaultReferencesParam(dn, params))
             return self.typeErrSpan("default value cannot reference another parameter", dn.span);
-        const def_val = try self.evalNode(dn, scope, null);
+        const def_val = try evalDefaultWithType(self, dn, &p.type_expr, scope);
         if (def_val.isUndefined())
             return self.typeErrSpan("default value is undefined", dn.span);
         if (p.type_expr.data == .name) {
@@ -1206,7 +1222,7 @@ pub fn evalFunctionCall(self: *Evaluator, callee_node: *const Ast.Node, arg_node
             }
             try func_scope.define(param.name, arg);
         } else if (param.default) |default_node| {
-            try func_scope.define(param.name, try self.evalNode(default_node, &func_scope, null));
+            try func_scope.define(param.name, try evalDefaultWithType(self, default_node, &param.type_expr, &func_scope));
         }
     }
 
