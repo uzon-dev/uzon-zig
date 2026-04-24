@@ -44,6 +44,12 @@ pub fn computeNamedDefault(self: *Evaluator, type_name: []const u8, scope: *Scop
     if (std.mem.eql(u8, type_name, "string")) return Value.str("");
     if (std.mem.eql(u8, type_name, "bool")) return Value.boolean(false);
     if (std.mem.eql(u8, type_name, "null")) return .null_val;
+    // Opaque inline-compound placeholders — produce an empty value of the
+    // matching category. Sufficient for §3.6 `union ...` member defaults and
+    // `tagged union ... as struct {...}` inner defaults.
+    if (std.mem.eql(u8, type_name, "struct")) return Value{ .struct_val = .{ .keys = &.{}, .values = &.{} } };
+    if (std.mem.eql(u8, type_name, "union")) return .null_val;
+    if (std.mem.eql(u8, type_name, "function")) return .null_val;
     if (scope.getType(type_name)) |td| {
         switch (td.kind) {
             .enum_type => |et| {
