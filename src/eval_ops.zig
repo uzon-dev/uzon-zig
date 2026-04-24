@@ -660,7 +660,9 @@ pub fn evalUnaryOp(self: *Evaluator, op: Ast.UnaryOp, node: *const Ast.Node, sco
     switch (op) {
         .negate => {
             if (operand.isUndefined()) return undefinedErrSingle(self, "cannot negate undefined", node, span);
-            return switch (operand) {
+            // §3.7.1: unary negation is transparent through tagged-union wrappers.
+            const inner = operand.unwrapTransparent();
+            return switch (inner) {
                 .integer => |i| Value{ .integer = .{
                     .value = std.math.negate(i.value) catch return self.rtErrSpan("integer overflow in negation", span),
                     .type_ann = i.type_ann,
