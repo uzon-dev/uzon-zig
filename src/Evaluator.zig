@@ -548,10 +548,6 @@ fn unescapeString(self: *Evaluator, raw: []const u8, span: Ast.Span) EvalError![
                     try buf.append(self.allocator, '{');
                     i += 2;
                 },
-                '}' => {
-                    try buf.append(self.allocator, '}');
-                    i += 2;
-                },
                 'x' => {
                     if (i + 3 >= raw.len) return self.rtErrSpan("incomplete \\x escape sequence", span);
                     const hi = std.fmt.charToDigit(raw[i + 2], 16) catch return self.rtErrSpan("invalid hex digit in \\x escape", span);

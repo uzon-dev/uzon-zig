@@ -1164,7 +1164,22 @@ fn parseStandaloneEnum(self: *Parser, s: Ast.Span) Error!*const Ast.Node {
     // `enum v1, v2, ...` — value is first variant (as an identifier)
     var variants = std.ArrayListUnmanaged([]const u8){};
     try variants.append(self.allocator, try self.parseVariantName());
-    while (self.commaAndNotBinding()) {
+    while (true) {
+        // Trailing comma is forbidden in enum variant lists (§8).
+        self.skipNewlines();
+        if (!self.at(.comma)) break;
+        var look = self.pos + 1;
+        while (look < self.tokens.len and self.tokens[look].type == .newline) look += 1;
+        if (look >= self.tokens.len or self.tokens[look].type == .eof or
+            self.tokens[look].type == .r_brace or self.tokens[look].type == .r_bracket or
+            self.tokens[look].type == .r_paren)
+        {
+            const tok = self.peek();
+            return self.fail("trailing comma in enum variant list", tok.line, tok.col);
+        }
+        if (self.isBindingStartAt(look)) break;
+        _ = self.advance(); // comma
+        self.skipNewlines();
         try variants.append(self.allocator, try self.parseVariantName());
     }
     if (variants.items.len == 0) return self.fail("enum must have at least one variant", s.line, s.col);

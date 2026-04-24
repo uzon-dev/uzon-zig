@@ -406,6 +406,13 @@ fn stampNamedType(self: *Evaluator, expr_node: *const Ast.Node, td: *const val.T
         return @import("eval_exprs.zig").resolveShorthandAgainstType(self, value, td, type_name, scope, span);
     }
 
+    // §6.3: `as TaggedUnion` on a non-tagged value requires `named` — without a
+    // variant tag the value has no place to live. Re-annotating an already-
+    // tagged value with its own type is allowed (handled via type_name check).
+    if (td.kind == .tagged_union_type and value != .tagged_union and value != .null_val and !value.isUndefined()) {
+        return self.typeErrSpan("`as TaggedUnion` on non-tagged value requires `named`", span);
+    }
+
     // §6.3 R7: literal adoption into named union — integer/float/string/bool
     // literals pick the first member whose category exactly matches; integer
     // literals may fall back to a float member via promotion. Float literals
