@@ -21,6 +21,9 @@ pub fn topologicalSort(
     for (bindings, 0..) |b, i| {
         try name_to_idx.put(allocator, b.name, i);
         if (b.called) |c| try called_to_idx.put(allocator, c, i);
+        // §3.9: a refinement declaration `T is Base where P` introduces T
+        // as a named type at binding position.
+        if (b.value.kind == .refinement) try called_to_idx.put(allocator, b.name, i);
     }
 
     var in_degree = try allocator.alloc(usize, n);
