@@ -1099,6 +1099,51 @@ pub fn typeDefsEquivalent(a: *const val.TypeDef, b: *const val.TypeDef) bool {
     };
 }
 
+/// §6.4 — returns true when any variant's inner type or field type mentions
+/// `self_name`, indicating a recursive type definition.
+pub fn typeDefReferencesName(td: *const val.TypeDef, self_name: []const u8) bool {
+    return switch (td.kind) {
+        .tagged_union_type => |tut| {
+            for (tut.variants) |v| if (v.type_name) |tn| {
+                if (typeNameMentions(tn, self_name)) return true;
+            };
+            return false;
+        },
+        .struct_type => |st| {
+            for (st.fields) |f| if (f.type_annotation) |ta| {
+                if (typeNameMentions(ta, self_name)) return true;
+            };
+            return false;
+        },
+        .union_type => |ut| {
+            for (ut.types) |mt| if (typeNameMentions(mt, self_name)) return true;
+            return false;
+        },
+        .list_type => |lt| return lt.element_type != null and typeNameMentions(lt.element_type.?, self_name),
+        else => false,
+    };
+}
+
+fn typeNameMentions(type_name: []const u8, self_name: []const u8) bool {
+    if (std.mem.eql(u8, type_name, self_name)) return true;
+    // Scan compound type strings like `[Foo]` or `(Foo, Bar)` for an
+    // unbracketed occurrence of `self_name`.
+    var i: usize = 0;
+    while (i + self_name.len <= type_name.len) : (i += 1) {
+        if (std.mem.eql(u8, type_name[i .. i + self_name.len], self_name)) {
+            const before_ok = i == 0 or !isIdentChar(type_name[i - 1]);
+            const after_i = i + self_name.len;
+            const after_ok = after_i == type_name.len or !isIdentChar(type_name[after_i]);
+            if (before_ok and after_ok) return true;
+        }
+    }
+    return false;
+}
+
+fn isIdentChar(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '_';
+}
+
 /// Extract `T` from a field AST of the form `name is null as T`.
 /// Returns null if the binding is not a typed-null declaration.
 fn typedNullAnnotation(binding: Ast.Binding) ?[]const u8 {

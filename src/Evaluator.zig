@@ -407,8 +407,19 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
                     }
                 }
             } else {
-                if (eval_types.buildTypeDef(self, type_name, value, binding.value)) |td|
+                if (eval_types.buildTypeDef(self, type_name, value, binding.value)) |td| {
+                    // §6.4: recursive type definitions are forbidden. Detect a
+                    // direct self-reference in a tagged-union variant's inner
+                    // type or a struct field's type annotation.
+                    if (eval_types.typeDefReferencesName(&td, type_name)) {
+                        self.collected_errors.append(self.allocator, UzonError.typeError(
+                            self.allocator, "recursive type definitions are forbidden", binding.span.line, binding.span.col,
+                        )) catch {};
+                        had_errors = true;
+                        continue;
+                    }
                     try scope.defineType(type_name, td);
+                }
             }
 
             if (scope.bindings.get(binding.name)) |ptr| {
