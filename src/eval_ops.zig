@@ -239,12 +239,19 @@ fn evalArithmetic(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *
         return undefinedErr(self, "undefined value in arithmetic operation", ln, rn, raw_l, raw_r, span);
 
     // §3.7.1: transparent arithmetic on a tagged union is admitted only when
-    // all variants of its declared type have numeric inner types.
+    // every non-null variant's inner type is numeric (refinements count by
+    // their base type; `null` variants are admissible via universal
+    // nullability — a runtime null triggers a runtime error later).
     inline for (.{ raw_l, raw_r }) |side| {
         if (side == .tagged_union) {
             for (side.tagged_union.variants) |v| {
-                const tn = v.type_name orelse return self.typeErrSpan("tagged-union variants include non-numeric inner type; arithmetic not transparent", span);
-                const ok = h.parseIntegerTypeName(tn) != null or h.parseFloatTypeName(tn) != null;
+                const tn = v.type_name orelse continue;
+                if (std.mem.eql(u8, tn, "null")) continue;
+                const base = if (scope.getType(tn)) |td|
+                    (if (td.refinement) |rf| rf.base_type_name else tn)
+                else
+                    tn;
+                const ok = h.parseIntegerTypeName(base) != null or h.parseFloatTypeName(base) != null;
                 if (!ok) return self.typeErrSpan("tagged-union variants include non-numeric inner type; arithmetic not transparent", span);
             }
         }
