@@ -257,17 +257,6 @@ fn scanString(self: *Lexer) !void {
                 }
             },
             '{' => {
-                // §4.4.1: a `{` introducing a pure digit/comma payload closed
-                // by `}` on the same string (i.e. matches `\{[0-9,]+\}`) is
-                // taken as literal text, not interpolation. This matches the
-                // shape of regex quantifiers `{N}` / `{N,M}` without forcing
-                // users to escape every brace inside a regex payload. The
-                // pattern requires at least one digit and admits at most a
-                // single comma between runs of digits.
-                if (regexBraceRun(self.source, self.pos)) |end| {
-                    while (self.pos <= end) self.advance();
-                    continue;
-                }
                 try self.emit(.string, self.source[start..self.pos], str_start_line, str_start_col);
                 try self.emit(.interp_start, "{", self.line, self.col);
                 self.advance();
@@ -801,23 +790,6 @@ fn restorePos(self: *Lexer, pos: usize, line: u32, col: u32) void {
     self.pos = pos;
     self.line = line;
     self.col = col;
-}
-
-/// Return the index of the closing `}` for a regex-shaped brace run at `pos`,
-/// or null if the sequence is not `\{[0-9]+(,[0-9]*)?\}`. Used by the string
-/// lexer to suppress interpolation for regex quantifier payloads.
-fn regexBraceRun(source: []const u8, pos: usize) ?usize {
-    if (pos >= source.len or source[pos] != '{') return null;
-    var i: usize = pos + 1;
-    // first digit run (required)
-    if (i >= source.len or !isDigit(source[i])) return null;
-    while (i < source.len and isDigit(source[i])) i += 1;
-    if (i < source.len and source[i] == ',') {
-        i += 1;
-        while (i < source.len and isDigit(source[i])) i += 1;
-    }
-    if (i < source.len and source[i] == '}') return i;
-    return null;
 }
 
 fn isDigit(c: u8) bool {
