@@ -18,9 +18,11 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lib);
 
-    // Unit tests (root.zig pulls in all modules via @import)
+    // Unit tests: tests_root.zig pulls in the library plus the test-only
+    // files (eval_test.zig, conformance.zig). The library artifact above
+    // builds from root.zig and does NOT include those test files.
     const test_mod = b.createModule(.{
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path("src/tests_root.zig"),
         .target = target,
         .optimize = optimize,
     });

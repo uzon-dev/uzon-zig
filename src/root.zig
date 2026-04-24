@@ -15,7 +15,9 @@ pub const err = @import("error.zig");
 pub const stringify_mod = @import("stringify.zig");
 pub const parse_into = @import("parse_into.zig");
 
-// Internal modules (test coverage via refAllDeclsRecursive)
+// Internal library modules — referenced so Zig analyzes them. Test-only
+// files (`eval_test.zig`, `conformance.zig`) live under `tests_root.zig`
+// and are not part of the library build.
 comptime {
     _ = @import("deps.zig");
     _ = @import("eval_helpers.zig");
@@ -23,8 +25,6 @@ comptime {
     _ = @import("eval_types.zig");
     _ = @import("eval_exprs.zig");
     _ = @import("stdlib.zig");
-    _ = @import("eval_test.zig");
-    _ = @import("conformance.zig");
 }
 
 // ── Public API types ────────────────────────────────────────
