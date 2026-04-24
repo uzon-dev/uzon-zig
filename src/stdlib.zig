@@ -119,16 +119,25 @@ fn stdGet(self: *Evaluator, args: []const Value, arg_spans: []const Ast.Span, sp
             },
             else => self.typeErrSpan("list index must be integer", s1),
         },
-        .tuple => |t| switch (args[1]) {
-            .integer => |idx| blk: {
-                if (idx.value < 0 or idx.value >= @as(i128, @intCast(t.elements.len))) break :blk .undefined;
-                break :blk t.elements[@intCast(idx.value)];
-            },
-            else => self.typeErrSpan("tuple index must be integer", s1),
+        // §5.16.2: zero-length tuple's synthesized return type would be a
+        // zero-member union (violates §3.6 minimum-two-members) — static error.
+        .tuple => |t| blk: {
+            if (t.elements.len == 0) break :blk self.typeErrSpan("std.get on empty tuple is a static type error", span);
+            break :blk switch (args[1]) {
+                .integer => |idx| blkk: {
+                    if (idx.value < 0 or idx.value >= @as(i128, @intCast(t.elements.len))) break :blkk .undefined;
+                    break :blkk t.elements[@intCast(idx.value)];
+                },
+                else => self.typeErrSpan("tuple index must be integer", s1),
+            };
         },
-        .struct_val => |s| switch (args[1]) {
-            .string => |key| if (s.get(key)) |v| v else .undefined,
-            else => self.typeErrSpan("struct key must be string", s1),
+        // §5.16.2: same rationale for zero-field structs.
+        .struct_val => |s| blk: {
+            if (s.keys.len == 0) break :blk self.typeErrSpan("std.get on empty struct is a static type error", span);
+            break :blk switch (args[1]) {
+                .string => |key| if (s.get(key)) |v| v else .undefined,
+                else => self.typeErrSpan("struct key must be string", s1),
+            };
         },
         else => self.typeErrSpan("std.get requires list, tuple, or struct", s0),
     };
