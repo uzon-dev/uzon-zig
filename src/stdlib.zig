@@ -633,15 +633,23 @@ fn callFunction(self: *Evaluator, func: val.Function, args: []const Value, func_
     for (func.captured_keys, func.captured_values) |key, v| try func_scope.define(key, v);
     for (func.captured_types) |td| try func_scope.defineType(td.name, td);
 
+    const eval_types = @import("eval_types.zig");
     for (func.params, 0..) |param, idx| {
         if (idx < args.len) {
             var arg = args[idx];
             if (param.type_expr.data == .name) {
                 const tn = param.type_expr.data.name;
                 if (!arg.isNull() and !arg.isUndefined()) {
-                    arg = h_.adoptToType(arg, tn);
-                    if (!h_.valueMatchesType(arg, tn))
+                    // §3.9: unwrap refinement to its base type for the structural check.
+                    const check_name = if (func_scope.getType(tn)) |td|
+                        (if (td.refinement) |rf| rf.base_type_name else tn)
+                    else
+                        tn;
+                    arg = h_.adoptToType(arg, check_name);
+                    if (!h_.valueMatchesType(arg, check_name))
                         return self.typeErrSpan("argument type mismatch", func_span);
+                    if (func_scope.getType(tn)) |td| if (td.refinement) |rf|
+                        try eval_types.checkRefinement(self, rf, arg, &func_scope, func_span);
                 }
             }
             try func_scope.define(param.name, arg);
@@ -656,8 +664,15 @@ fn callFunction(self: *Evaluator, func: val.Function, args: []const Value, func_
     if (func.return_type.data == .name) {
         const rtn = func.return_type.data.name;
         if (!result.isNull() and !result.isUndefined()) {
-            result = h_.adoptToType(result, rtn);
-            if (!h_.valueMatchesType(result, rtn)) {
+            // §3.9: refinement return — match against base + predicate.
+            const check_rtn = if (func_scope.getType(rtn)) |td|
+                (if (td.refinement) |rf| rf.base_type_name else rtn)
+            else
+                rtn;
+            result = h_.adoptToType(result, check_rtn);
+            if (func_scope.getType(rtn)) |td| if (td.refinement) |rf|
+                try eval_types.checkRefinement(self, rf, result, &func_scope, func.body_expr.span);
+            if (!h_.valueMatchesType(result, check_rtn)) {
                 const body_span = func.body_expr.span;
                 return self.typeErrSpan("function return type mismatch", body_span);
             }
