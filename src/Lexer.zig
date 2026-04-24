@@ -111,6 +111,20 @@ fn scanNormal(self: *Lexer) !void {
         return self.fail("mid-file BOM outside string literal", start_line, start_col);
     }
 
+    // §2.1: U+2028 LINE SEPARATOR (E2 80 A8) and U+2029 PARAGRAPH SEPARATOR
+    // (E2 80 A9) are recognized as NEWLINE tokens, equivalent to LF/CR.
+    if (c == 0xE2 and self.pos + 2 < self.source.len and
+        self.source[self.pos + 1] == 0x80 and
+        (self.source[self.pos + 2] == 0xA8 or self.source[self.pos + 2] == 0xA9))
+    {
+        const seq = self.source[self.pos .. self.pos + 3];
+        try self.emit(.newline, seq, start_line, start_col);
+        self.pos += 3;
+        self.line += 1;
+        self.col = 1;
+        return;
+    }
+
     switch (c) {
         '\n' => {
             try self.emit(.newline, "\n", start_line, start_col);
@@ -519,8 +533,13 @@ fn scanNumber(self: *Lexer, line: u32, col: u32) !void {
         }
     }
 
-    // If non-boundary char follows digits, this is an identifier (e.g. "1st")
-    if (self.pos < self.source.len and !isWordBoundary(self.source[self.pos])) {
+    // If non-boundary char follows digits, this is an identifier (e.g. "1st").
+    // U+2028 / U+2029 act as NEWLINE, which is a word boundary but encodes as
+    // E2 80 A8/A9 — not covered by the single-byte isWordBoundary table.
+    const at_line_sep = self.pos + 2 < self.source.len and
+        self.source[self.pos] == 0xE2 and self.source[self.pos + 1] == 0x80 and
+        (self.source[self.pos + 2] == 0xA8 or self.source[self.pos + 2] == 0xA9);
+    if (self.pos < self.source.len and !isWordBoundary(self.source[self.pos]) and !at_line_sep) {
         self.pos = start;
         self.col = col;
         try self.scanIdentifierOrKeyword(line, col);
@@ -540,6 +559,10 @@ fn scanIdentifierOrKeyword(self: *Lexer, line: u32, col: u32) !void {
     while (self.pos < self.source.len) {
         const c = self.source[self.pos];
         if (isWordBoundary(c)) break;
+        // §2.1: U+2028/U+2029 act as NEWLINE — break out of the identifier.
+        if (c == 0xE2 and self.pos + 2 < self.source.len and
+            self.source[self.pos + 1] == 0x80 and
+            (self.source[self.pos + 2] == 0xA8 or self.source[self.pos + 2] == 0xA9)) break;
         // §2.3: RTL/bidi marks are rejected mid-identifier too.
         if (c == 0xE2 and self.pos + 2 < self.source.len) {
             const b1 = self.source[self.pos + 1];
