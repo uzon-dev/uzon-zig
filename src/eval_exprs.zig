@@ -903,7 +903,14 @@ fn applyOverrides(self: *Evaluator, bs: val.Struct, os: val.Struct, preserve_typ
         new_keys[i] = key;
         if (os.get(key)) |ov| {
             if (ov.isUndefined()) return self.rtErrSpan("override field evaluates to undefined", span);
-            new_values[i] = try applyFieldOverride(self, base_val, ov, lookupFieldInfo(field_infos, key), span);
+            const fi_opt = lookupFieldInfo(field_infos, key);
+            new_values[i] = try applyFieldOverride(self, base_val, ov, fi_opt, span);
+            // §3.9: if the field's declared type is a refinement, run the
+            // predicate on the override value.
+            if (fi_opt) |fi| if (fi.type_annotation) |ann| {
+                if (scope.getType(ann)) |td| if (td.refinement) |rf|
+                    try eval_types.checkRefinement(self, rf, new_values[i], scope, span);
+            };
         } else {
             new_values[i] = base_val;
         }
