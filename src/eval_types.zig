@@ -340,16 +340,19 @@ fn annotateList(self: *Evaluator, expr_node: *const Ast.Node, inner_type: *const
     // Validate and adopt list elements
     if (inner_type_name) |itn| {
         const adopted = try self.allocator.alloc(Value, resolved_elements.len);
-        if (scope.getType(itn) != null) {
+        if (scope.getType(itn)) |td| {
+            // §3.9: refinement element type — check base match + predicate.
+            const check_name = if (td.refinement) |rf| rf.base_type_name else itn;
             for (resolved_elements, 0..) |elem, j| {
                 if (elem.isUndefined() or elem.isNull()) {
                     adopted[j] = elem;
                 } else {
-                    var a = h.adoptToType(elem, itn);
+                    var a = h.adoptToType(elem, check_name);
                     if (a == .struct_val and a.struct_val.type_name == null)
                         a = Value{ .struct_val = .{ .keys = a.struct_val.keys, .values = a.struct_val.values, .type_name = itn } };
-                    if (!h.valueMatchesType(a, itn))
+                    if (!h.valueMatchesType(a, check_name))
                         return self.typeErr("list element does not match declared element type", span.line, span.col);
+                    if (td.refinement) |rf| try checkRefinement(self, rf, a, scope, span);
                     adopted[j] = a;
                 }
             }
