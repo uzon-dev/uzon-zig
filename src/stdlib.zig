@@ -73,6 +73,9 @@ pub fn evalStdlibCall(self: *Evaluator, func_name: []const u8, arg_nodes: []cons
     if (std.mem.eql(u8, func_name, "filter")) return stdFilter(self, args, arg_spans, span);
     if (std.mem.eql(u8, func_name, "reduce")) return stdReduce(self, args, arg_spans, span);
     if (std.mem.eql(u8, func_name, "sort")) return stdSort(self, args, arg_spans, span);
+    if (std.mem.eql(u8, func_name, "pow")) return stdPow(self, args, arg_spans, span);
+    if (std.mem.eql(u8, func_name, "repeat")) return stdRepeat(self, args, arg_spans, span);
+    if (std.mem.eql(u8, func_name, "matches")) return stdMatches(self, args, arg_spans, span);
 
     return self.typeErrSpan("unknown standard library function", span);
 }
@@ -715,4 +718,89 @@ fn unicodeToLower(cp: u21) u21 {
     if (cp >= 0x410 and cp <= 0x42F) return cp + 0x20;
     if (cp >= 0x400 and cp <= 0x40F) return cp + 0x50;
     return cp;
+}
+
+// ── §5.16.5 std.pow / §5.16.1 std.repeat / §5.16.7 std.matches ─────
+
+fn stdPow(self: *Evaluator, args: []const Value, arg_spans: []const Ast.Span, span: Ast.Span) EvalError!Value {
+    try expectArgs(self, args, 2, span);
+    const s0 = argSpan(arg_spans, 0, span);
+    const s1 = argSpan(arg_spans, 1, span);
+    const ops = @import("eval_ops.zig");
+    const base = args[0];
+    const exp = args[1];
+    return switch (base) {
+        .integer => |bi| switch (exp) {
+            .integer => |ei| blk: {
+                if (bi.explicit and ei.explicit and !h_.intTypesMatch(bi.type_ann, ei.type_ann))
+                    return self.typeErrSpan("std.pow requires matching integer types", span);
+                if (ei.value < 0) return self.rtErrSpan("negative exponent for integer std.pow", s1);
+                const result = try ops.intPowPublic(self, bi.value, ei.value, span);
+                const rt = h_.adoptIntType(bi, ei);
+                if ((bi.explicit or ei.explicit) and !h_.intFitsType(result, rt))
+                    return self.rtErrSpan("integer overflow for type", span);
+                break :blk Value{ .integer = .{ .value = result, .type_ann = rt, .explicit = bi.explicit or ei.explicit } };
+            },
+            else => self.typeErrSpan("std.pow requires both arguments same numeric type", s1),
+        },
+        .float_val => |bf| switch (exp) {
+            .float_val => |ef| blk: {
+                if (bf.explicit and ef.explicit and bf.type_ann != ef.type_ann)
+                    return self.typeErrSpan("std.pow requires matching float types", span);
+                const rt = h_.adoptFloatType(bf, ef);
+                const result = std.math.pow(f64, bf.value, ef.value);
+                break :blk Value{ .float_val = .{ .value = result, .type_ann = rt, .explicit = bf.explicit or ef.explicit } };
+            },
+            else => self.typeErrSpan("std.pow requires both arguments same numeric type", s1),
+        },
+        else => self.typeErrSpan("std.pow requires numeric arguments", s0),
+    };
+}
+
+fn stdRepeat(self: *Evaluator, args: []const Value, arg_spans: []const Ast.Span, span: Ast.Span) EvalError!Value {
+    try expectArgs(self, args, 2, span);
+    const s0 = argSpan(arg_spans, 0, span);
+    const s1 = argSpan(arg_spans, 1, span);
+    const count: usize = switch (args[1]) {
+        .integer => |ri| blk: {
+            if (ri.value < 0) return self.rtErrSpan("std.repeat count must be non-negative", s1);
+            break :blk @intCast(ri.value);
+        },
+        else => return self.typeErrSpan("std.repeat count must be integer", s1),
+    };
+    return switch (args[0]) {
+        .string => |s| blk: {
+            if (count == 0) break :blk Value.str("");
+            var buf = std.ArrayListUnmanaged(u8){};
+            for (0..count) |_| buf.appendSlice(self.allocator, s) catch return error.OutOfMemory;
+            break :blk Value.str(buf.items);
+        },
+        .list => |l| blk: {
+            const elements = try self.allocator.alloc(Value, l.elements.len * count);
+            for (0..count) |rep| @memcpy(elements[rep * l.elements.len .. (rep + 1) * l.elements.len], l.elements);
+            const et = l.element_type orelse h_.listElementTypeName(args[0]);
+            break :blk Value{ .list = .{ .elements = elements, .element_type = et } };
+        },
+        else => self.typeErrSpan("std.repeat first argument must be string or list", s0),
+    };
+}
+
+fn stdMatches(self: *Evaluator, args: []const Value, arg_spans: []const Ast.Span, span: Ast.Span) EvalError!Value {
+    try expectArgs(self, args, 2, span);
+    const s0 = argSpan(arg_spans, 0, span);
+    const s1 = argSpan(arg_spans, 1, span);
+    const input = switch (args[0]) {
+        .string => |s| s,
+        else => return self.typeErrSpan("std.matches requires string", s0),
+    };
+    const pattern = switch (args[1]) {
+        .string => |s| s,
+        else => return self.typeErrSpan("std.matches pattern must be string", s1),
+    };
+    const regex = @import("regex.zig");
+    return regex.matchAnchored(self.allocator, pattern, input) catch |e| switch (e) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.MalformedPattern => self.typeErrSpan("std.matches malformed pattern", s1),
+        error.UnsupportedFeature => self.typeErrSpan("std.matches pattern uses unsupported feature", s1),
+    };
 }
