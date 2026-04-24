@@ -549,8 +549,10 @@ fn evalEquality(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *co
 }
 
 fn evalLogical(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
-    const left = try self.evalNode(ln, scope, exclude);
-    if (left.isUndefined()) return undefinedErrSingle(self, "undefined value in logical operation", ln, span);
+    const raw_left = try self.evalNode(ln, scope, exclude);
+    if (raw_left.isUndefined()) return undefinedErrSingle(self, "undefined value in logical operation", ln, span);
+    // §3.7.1: tagged union wrappers are transparent to logical operators.
+    const left = raw_left.unwrapTransparent();
 
     switch (left) {
         .bool_val => |lv| {
@@ -562,8 +564,9 @@ fn evalLogical(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *con
                 try speculativeEval(self, rn, scope, exclude);
                 return Value.boolean(false);
             }
-            const right = try self.evalNode(rn, scope, exclude);
-            if (right.isUndefined()) return undefinedErrSingle(self, "undefined value in logical operation", rn, span);
+            const raw_right = try self.evalNode(rn, scope, exclude);
+            if (raw_right.isUndefined()) return undefinedErrSingle(self, "undefined value in logical operation", rn, span);
+            const right = raw_right.unwrapTransparent();
             return switch (right) {
                 .bool_val => |rv| Value.boolean(rv),
                 else => self.typeErrSpan("logical operators require bool operands", span),
@@ -669,7 +672,8 @@ pub fn evalUnaryOp(self: *Evaluator, op: Ast.UnaryOp, node: *const Ast.Node, sco
         },
         .not => {
             if (operand.isUndefined()) return undefinedErrSingle(self, "undefined value in 'not' operation", node, span);
-            return switch (operand) {
+            const inner = operand.unwrapTransparent();
+            return switch (inner) {
                 .bool_val => |bv| Value.boolean(!bv),
                 else => self.typeErrSpan("'not' requires bool operand", span),
             };
