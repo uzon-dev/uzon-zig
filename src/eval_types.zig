@@ -88,6 +88,7 @@ pub fn computeNamedDefault(self: *Evaluator, type_name: []const u8, scope: *Scop
             .list_type => |lt| return Value{ .list = .{ .elements = &.{}, .element_type = lt.element_type, .type_name = type_name } },
             .function_type => return self.typeErrSpan("cannot default-construct function type", span),
             .refinement_primitive => |rp| return computeNamedDefault(self, rp.base, scope, span),
+            .scalar_type => |sp| return computeNamedDefault(self, sp.base, scope, span),
         }
     }
     return self.typeErrSpan("unknown type in default computation", span);
@@ -306,6 +307,15 @@ pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_exp
             try checkRefinement(self, rf, adopted, scope, span);
             return adopted;
         }
+        // §6.2: `as ScalarType` re-uses the scalar's nominal identity.
+        // Verify the value matches the backing primitive type.
+        if (td.kind == .scalar_type) {
+            const base = td.kind.scalar_type.base;
+            const adopted = h.adoptToType(value, base);
+            if (!h.valueMatchesType(adopted, base))
+                return self.typeErrSpan("value does not match scalar named type's base", span);
+            return adopted;
+        }
         // §6.1: `null as T` is valid only when T admits null. Named enums and
         // named structs never admit null. Untagged unions must include `null` as
         // a member type. (Tagged unions are handled by evalNamedVariant when the
@@ -323,7 +333,7 @@ pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_exp
                     if (!has_null) return self.typeErr("cannot annotate null as union type without null member", span.line, span.col);
                 },
                 .function_type, .list_type => return self.typeErr("cannot annotate null as this type", span.line, span.col),
-                .tagged_union_type, .refinement_primitive => {},
+                .tagged_union_type, .refinement_primitive, .scalar_type => {},
             }
         }
         return stampNamedType(self, expr_node, td, type_name, value, scope, span);
@@ -1038,6 +1048,7 @@ pub fn typeDefsEquivalent(a: *const val.TypeDef, b: *const val.TypeDef) bool {
             break :blk std.mem.eql(u8, a_et, b_et);
         },
         .refinement_primitive => |ar| std.mem.eql(u8, ar.base, b.kind.refinement_primitive.base),
+        .scalar_type => |asc| std.mem.eql(u8, asc.base, b.kind.scalar_type.base),
     };
 }
 
@@ -1056,6 +1067,12 @@ fn typedNullAnnotation(binding: Ast.Binding) ?[]const u8 {
 
 pub fn buildTypeDef(self: *Evaluator, name: []const u8, value: Value, ast: ?*const Ast.Node) ?val.TypeDef {
     return switch (value) {
+        // §6.2: `called` on a primitive scalar introduces a nominally-
+        // identified wrapper whose base is the scalar's concrete type.
+        .integer => |i| val.TypeDef{ .name = name, .kind = .{ .scalar_type = .{ .base = h.intTypeNameAlloc(self.allocator, i.type_ann) orelse "i64" } } },
+        .float_val => |f| val.TypeDef{ .name = name, .kind = .{ .scalar_type = .{ .base = h.floatTypeName(f.type_ann) orelse "f64" } } },
+        .string => val.TypeDef{ .name = name, .kind = .{ .scalar_type = .{ .base = "string" } } },
+        .bool_val => val.TypeDef{ .name = name, .kind = .{ .scalar_type = .{ .base = "bool" } } },
         .enum_val => |e| val.TypeDef{ .name = name, .kind = .{ .enum_type = .{ .variants = e.variants } } },
         .union_val => |u| val.TypeDef{ .name = name, .kind = .{ .union_type = .{ .types = u.types } } },
         .tagged_union => |tu| val.TypeDef{ .name = name, .kind = .{ .tagged_union_type = .{ .variants = tu.variants } } },

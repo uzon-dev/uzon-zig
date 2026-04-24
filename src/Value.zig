@@ -122,6 +122,9 @@ pub const TypeDef = struct {
         list_type: struct { element_type: ?[]const u8 },
         /// §3.9 refinement on a primitive base (u16, string, etc.).
         refinement_primitive: struct { base: []const u8 },
+        /// §6.2 nominal identity wrapper over a primitive scalar (e.g.
+        /// `small_int is 42 called SmallInt` → i64-backed SmallInt).
+        scalar_type: struct { base: []const u8 },
     };
 
     pub const FieldInfo = struct {
