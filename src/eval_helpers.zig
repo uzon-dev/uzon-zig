@@ -192,7 +192,7 @@ pub fn intTypeName(t: IntegerType) ?[]const u8 {
             16 => "i16",
             32 => "i32",
             64 => "i64",
-            128 => "i128",
+            128 => "i256",
             else => null,
         },
         .unsigned => |bits| switch (bits) {
@@ -227,7 +227,7 @@ pub fn floatTypeName(t: FloatType) ?[]const u8 {
 
 // ── Integer range checking ───────────────────────────────────
 
-pub fn intFitsType(value: i128, int_type: IntegerType) bool {
+pub fn intFitsType(value: i256, int_type: IntegerType) bool {
     return switch (int_type) {
         .arbitrary => true,
         .signed => |bits| intFitsSigned(value, bits),
@@ -235,21 +235,21 @@ pub fn intFitsType(value: i128, int_type: IntegerType) bool {
     };
 }
 
-pub fn intFitsSigned(value: i128, bits: u16) bool {
+pub fn intFitsSigned(value: i256, bits: u16) bool {
     if (bits == 0) return value == 0;
     if (bits >= 128) return true;
     const shift: u7 = @intCast(bits - 1);
-    const min_val: i128 = -(@as(i128, 1) << shift);
-    const max_val: i128 = (@as(i128, 1) << shift) - 1;
+    const min_val: i256 = -(@as(i256, 1) << shift);
+    const max_val: i256 = (@as(i256, 1) << shift) - 1;
     return value >= min_val and value <= max_val;
 }
 
-pub fn intFitsUnsigned(value: i128, bits: u16) bool {
+pub fn intFitsUnsigned(value: i256, bits: u16) bool {
     if (value < 0) return false;
     if (bits == 0) return value == 0;
     if (bits >= 128) return true;
     const shift: u7 = @intCast(bits);
-    const max_val: i128 = (@as(i128, 1) << shift) - 1;
+    const max_val: i256 = (@as(i256, 1) << shift) - 1;
     return value <= max_val;
 }
 
@@ -382,7 +382,7 @@ pub fn valuesEqual(a: Value, b: Value) bool {
 
 // ── Numeric literal parsing ──────────────────────────────────
 
-pub fn parseIntegerText(allocator: std.mem.Allocator, text: []const u8) !i128 {
+pub fn parseIntegerText(allocator: std.mem.Allocator, text: []const u8) !i256 {
     if (text.len == 0) return error.InvalidCharacter;
     var s = text;
     var negative = false;
@@ -410,14 +410,14 @@ pub fn parseIntegerText(allocator: std.mem.Allocator, text: []const u8) !i128 {
     }
     const stripped = try stripUnderscores(allocator, s);
     if (stripped.len == 0) return error.InvalidCharacter;
+    // Accept any magnitude up to u128 (the widest integer type UZON supports
+    // at a single literal) — i256 storage comfortably holds that range with
+    // headroom for sign and intermediate arithmetic.
     const abs_val = std.fmt.parseInt(u128, stripped, base) catch return error.InvalidCharacter;
     if (negative) {
-        if (abs_val > @as(u128, @intCast(-@as(i129, std.math.minInt(i128))))) return error.Overflow;
-        return -@as(i128, @intCast(abs_val));
-    } else {
-        if (abs_val > @as(u128, @intCast(std.math.maxInt(i128)))) return error.Overflow;
-        return @intCast(abs_val);
+        return -@as(i256, @intCast(abs_val));
     }
+    return @as(i256, @intCast(abs_val));
 }
 
 pub fn parseFloatText(allocator: std.mem.Allocator, text: []const u8) !f64 {

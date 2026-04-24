@@ -55,15 +55,15 @@ test "parse integer literals" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    try std.testing.expectEqual(@as(i128, 42), try h.parseIntegerText(a, "42"));
-    try std.testing.expectEqual(@as(i128, -42), try h.parseIntegerText(a, "-42"));
-    try std.testing.expectEqual(@as(i128, 255), try h.parseIntegerText(a, "0xFF"));
-    try std.testing.expectEqual(@as(i128, 255), try h.parseIntegerText(a, "0xff"));
-    try std.testing.expectEqual(@as(i128, -255), try h.parseIntegerText(a, "-0xff"));
-    try std.testing.expectEqual(@as(i128, 63), try h.parseIntegerText(a, "0o77"));
-    try std.testing.expectEqual(@as(i128, 10), try h.parseIntegerText(a, "0b1010"));
-    try std.testing.expectEqual(@as(i128, 1000000), try h.parseIntegerText(a, "1_000_000"));
-    try std.testing.expectEqual(@as(i128, 0), try h.parseIntegerText(a, "0"));
+    try std.testing.expectEqual(@as(i256, 42), try h.parseIntegerText(a, "42"));
+    try std.testing.expectEqual(@as(i256, -42), try h.parseIntegerText(a, "-42"));
+    try std.testing.expectEqual(@as(i256, 255), try h.parseIntegerText(a, "0xFF"));
+    try std.testing.expectEqual(@as(i256, 255), try h.parseIntegerText(a, "0xff"));
+    try std.testing.expectEqual(@as(i256, -255), try h.parseIntegerText(a, "-0xff"));
+    try std.testing.expectEqual(@as(i256, 63), try h.parseIntegerText(a, "0o77"));
+    try std.testing.expectEqual(@as(i256, 10), try h.parseIntegerText(a, "0b1010"));
+    try std.testing.expectEqual(@as(i256, 1000000), try h.parseIntegerText(a, "1_000_000"));
+    try std.testing.expectEqual(@as(i256, 0), try h.parseIntegerText(a, "0"));
 }
 
 test "parse float literals" {
@@ -82,7 +82,7 @@ test "eval simple integer arithmetic" {
     const a = arena.allocator();
 
     const result = try eval(a, try binOp(a, .add, try intLit(a, "2"), try intLit(a, "3")));
-    try std.testing.expectEqual(@as(i128, 5), result.integer.value);
+    try std.testing.expectEqual(@as(i256, 5), result.integer.value);
 }
 
 test "eval integer division truncates toward zero" {
@@ -91,7 +91,7 @@ test "eval integer division truncates toward zero" {
     const a = arena.allocator();
 
     const result = try eval(a, try binOp(a, .div, try intLit(a, "-10"), try intLit(a, "3")));
-    try std.testing.expectEqual(@as(i128, -3), result.integer.value);
+    try std.testing.expectEqual(@as(i256, -3), result.integer.value);
 }
 
 test "eval modulo follows dividend sign" {
@@ -100,7 +100,7 @@ test "eval modulo follows dividend sign" {
     const a = arena.allocator();
 
     const result = try eval(a, try binOp(a, .mod_, try intLit(a, "-10"), try intLit(a, "3")));
-    try std.testing.expectEqual(@as(i128, -1), result.integer.value);
+    try std.testing.expectEqual(@as(i256, -1), result.integer.value);
 }
 
 test "eval division by zero is runtime error" {
@@ -171,7 +171,7 @@ test "eval if expression with speculative eval" {
         .else_branch = try binOp(a, .div, try intLit(a, "1"), try intLit(a, "0")),
     } });
     const result = try eval(a, n);
-    try std.testing.expectEqual(@as(i128, 1), result.integer.value);
+    try std.testing.expectEqual(@as(i256, 1), result.integer.value);
 }
 
 test "eval struct literal" {
@@ -184,8 +184,8 @@ test "eval struct literal" {
     fields[1] = binding("y", try intLit(a, "2"));
 
     const result = try eval(a, try node(a, .{ .struct_literal = .{ .fields = fields } }));
-    try std.testing.expectEqual(@as(i128, 1), result.struct_val.get("x").?.integer.value);
-    try std.testing.expectEqual(@as(i128, 2), result.struct_val.get("y").?.integer.value);
+    try std.testing.expectEqual(@as(i256, 1), result.struct_val.get("x").?.integer.value);
+    try std.testing.expectEqual(@as(i256, 2), result.struct_val.get("y").?.integer.value);
 }
 
 test "eval forward references in bindings" {
@@ -199,8 +199,8 @@ test "eval forward references in bindings" {
     bindings[1] = binding("b", try intLit(a, "10"));
 
     const result = try evalDoc(a, bindings);
-    try std.testing.expectEqual(@as(i128, 11), result.struct_val.get("a").?.integer.value);
-    try std.testing.expectEqual(@as(i128, 10), result.struct_val.get("b").?.integer.value);
+    try std.testing.expectEqual(@as(i256, 11), result.struct_val.get("a").?.integer.value);
+    try std.testing.expectEqual(@as(i256, 10), result.struct_val.get("b").?.integer.value);
 }
 
 test "eval self-exclusion rule" {
@@ -214,7 +214,7 @@ test "eval self-exclusion rule" {
     bindings[0] = binding("x", or_else);
 
     const result = try evalDoc(a, bindings);
-    try std.testing.expectEqual(@as(i128, 42), result.struct_val.get("x").?.integer.value);
+    try std.testing.expectEqual(@as(i256, 42), result.struct_val.get("x").?.integer.value);
 }
 
 test "eval deep equality" {
@@ -269,7 +269,7 @@ test "eval type annotation as i32" {
 
     const te = Ast.TypeExpr{ .data = .{ .name = "i32" }, .span = .{ .line = 1, .col = 6 } };
     const result = try eval(a, try node(a, .{ .type_annotation = .{ .expr = try intLit(a, "42"), .type_expr = te } }));
-    try std.testing.expectEqual(@as(i128, 42), result.integer.value);
+    try std.testing.expectEqual(@as(i256, 42), result.integer.value);
     try std.testing.expect(result.integer.explicit);
     try std.testing.expectEqual(IntegerType{ .signed = 32 }, result.integer.type_ann);
 }
@@ -300,7 +300,7 @@ test "eval to integer from string" {
 
     const te = Ast.TypeExpr{ .data = .{ .name = "u8" }, .span = .{ .line = 1, .col = 7 } };
     const result = try eval(a, try node(a, .{ .conversion = .{ .expr = try strLit(a, "255"), .type_expr = te } }));
-    try std.testing.expectEqual(@as(i128, 255), result.integer.value);
+    try std.testing.expectEqual(@as(i256, 255), result.integer.value);
     try std.testing.expectEqual(IntegerType{ .unsigned = 8 }, result.integer.type_ann);
 }
 
@@ -311,7 +311,7 @@ test "eval to integer from hex string" {
 
     const te = Ast.TypeExpr{ .data = .{ .name = "i32" }, .span = .{ .line = 1, .col = 9 } };
     const result = try eval(a, try node(a, .{ .conversion = .{ .expr = try strLit(a, "-0xff"), .type_expr = te } }));
-    try std.testing.expectEqual(@as(i128, -255), result.integer.value);
+    try std.testing.expectEqual(@as(i256, -255), result.integer.value);
 }
 
 test "eval struct with override" {
@@ -330,8 +330,8 @@ test "eval struct with override" {
         .base = try node(a, .{ .struct_literal = .{ .fields = base_fields } }),
         .overrides = try node(a, .{ .struct_literal = .{ .fields = over_fields } }),
     } }));
-    try std.testing.expectEqual(@as(i128, 10), result.struct_val.get("x").?.integer.value);
-    try std.testing.expectEqual(@as(i128, 2), result.struct_val.get("y").?.integer.value);
+    try std.testing.expectEqual(@as(i256, 10), result.struct_val.get("x").?.integer.value);
+    try std.testing.expectEqual(@as(i256, 2), result.struct_val.get("y").?.integer.value);
 }
 
 test "eval struct with cannot add new field" {
@@ -366,8 +366,8 @@ test "eval struct plus extension" {
         .base = try node(a, .{ .struct_literal = .{ .fields = base_fields } }),
         .extension = try node(a, .{ .struct_literal = .{ .fields = ext_fields } }),
     } }));
-    try std.testing.expectEqual(@as(i128, 1), result.struct_val.get("x").?.integer.value);
-    try std.testing.expectEqual(@as(i128, 2), result.struct_val.get("y").?.integer.value);
+    try std.testing.expectEqual(@as(i256, 1), result.struct_val.get("x").?.integer.value);
+    try std.testing.expectEqual(@as(i256, 2), result.struct_val.get("y").?.integer.value);
 }
 
 test "eval undefined propagates through to" {
@@ -421,7 +421,7 @@ test "eval list member access" {
     const n = try node(a, .{ .member_access = .{ .object = list, .member = "second" } });
 
     const result = try eval(a, n);
-    try std.testing.expectEqual(@as(i128, 20), result.integer.value);
+    try std.testing.expectEqual(@as(i256, 20), result.integer.value);
 }
 
 // ── Multi-error collection tests (via parse API) ────────

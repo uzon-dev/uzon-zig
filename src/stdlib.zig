@@ -91,9 +91,9 @@ fn argSpan(arg_spans: []const Ast.Span, idx: usize, span: Ast.Span) Ast.Span {
 fn stdLen(self: *Evaluator, args: []const Value, arg_spans: []const Ast.Span, span: Ast.Span) EvalError!Value {
     try expectArgs(self, args, 1, span);
     const s0 = argSpan(arg_spans, 0, span);
-    const len: i128 = switch (args[0]) {
+    const len: i256 = switch (args[0]) {
         .string => |s| blk: {
-            var count: i128 = 0;
+            var count: i256 = 0;
             var view = std.unicode.Utf8View.initUnchecked(s);
             var it = view.iterator();
             while (it.nextCodepoint() != null) count += 1;
@@ -114,7 +114,7 @@ fn stdGet(self: *Evaluator, args: []const Value, arg_spans: []const Ast.Span, sp
     return switch (args[0]) {
         .list => |l| switch (args[1]) {
             .integer => |idx| blk: {
-                if (idx.value < 0 or idx.value >= @as(i128, @intCast(l.elements.len))) break :blk .undefined;
+                if (idx.value < 0 or idx.value >= @as(i256, @intCast(l.elements.len))) break :blk .undefined;
                 break :blk l.elements[@intCast(idx.value)];
             },
             else => self.typeErrSpan("list index must be integer", s1),
@@ -125,7 +125,7 @@ fn stdGet(self: *Evaluator, args: []const Value, arg_spans: []const Ast.Span, sp
             if (t.elements.len == 0) break :blk self.typeErrSpan("std.get on empty tuple is a static type error", span);
             break :blk switch (args[1]) {
                 .integer => |idx| blkk: {
-                    if (idx.value < 0 or idx.value >= @as(i128, @intCast(t.elements.len))) break :blkk .undefined;
+                    if (idx.value < 0 or idx.value >= @as(i256, @intCast(t.elements.len))) break :blkk .undefined;
                     break :blkk t.elements[@intCast(idx.value)];
                 },
                 else => self.typeErrSpan("tuple index must be integer", s1),

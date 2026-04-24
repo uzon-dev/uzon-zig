@@ -126,7 +126,7 @@ fn evalRelationalValues(self: *Evaluator, op: Ast.BinaryOp, raw_l: Value, raw_r:
             .integer => |ri| blk: {
                 if (li.explicit and ri.explicit and !h.intTypesMatch(li.type_ann, ri.type_ann))
                     return self.typeErrSpan("integer type mismatch in comparison", Ast.Span{ .line = 0, .col = 0 });
-                break :blk cmp(i128, li.value, ri.value, op);
+                break :blk cmp(i256, li.value, ri.value, op);
             },
             else => self.typeErrSpan("relational comparison requires same types", Ast.Span{ .line = 0, .col = 0 }),
         },
@@ -196,32 +196,32 @@ fn evalBitwise(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *con
     const is_signed = rt == .signed;
     var a = li.value;
     var b = ri.value;
-    const result: i128 = switch (op) {
+    const result: i256 = switch (op) {
         .bit_and => a & b,
         .bit_or => a | b,
         .bit_xor => a ^ b,
         .shl => blk: {
-            if (b < 0 or b >= @as(i128, width))
+            if (b < 0 or b >= @as(i256, width))
                 return self.rtErrSpan("shift count out of range", span);
             const shifted = a << @intCast(b);
             // Mask to width
-            const mask: i128 = (@as(i128, 1) << @intCast(width)) - 1;
+            const mask: i256 = (@as(i256, 1) << @intCast(width)) - 1;
             var masked = shifted & mask;
             if (is_signed and width < 128) {
-                const sign_bit: i128 = @as(i128, 1) << @intCast(width - 1);
+                const sign_bit: i256 = @as(i256, 1) << @intCast(width - 1);
                 if ((masked & sign_bit) != 0) masked = masked | ~mask;
             }
             break :blk masked;
         },
         .shr => blk: {
-            if (b < 0 or b >= @as(i128, width))
+            if (b < 0 or b >= @as(i256, width))
                 return self.rtErrSpan("shift count out of range", span);
             if (is_signed) {
                 break :blk a >> @intCast(b);
             } else {
-                const mask: i128 = (@as(i128, 1) << @intCast(width)) - 1;
+                const mask: i256 = (@as(i256, 1) << @intCast(width)) - 1;
                 const u: u128 = @intCast(a & mask);
-                break :blk @as(i128, @intCast(u >> @intCast(b)));
+                break :blk @as(i256, @intCast(u >> @intCast(b)));
             }
         },
         else => unreachable,
@@ -282,10 +282,10 @@ fn intArithmetic(self: *Evaluator, op: Ast.BinaryOp, left: Integer, right: Integ
     const b = right.value;
     const rt = h.adoptIntType(left, right);
 
-    const result: i128 = switch (op) {
-        .add => std.math.add(i128, a, b) catch return self.rtErrSpan("integer overflow", span),
-        .sub => std.math.sub(i128, a, b) catch return self.rtErrSpan("integer overflow", span),
-        .mul => std.math.mul(i128, a, b) catch return self.rtErrSpan("integer overflow", span),
+    const result: i256 = switch (op) {
+        .add => std.math.add(i256, a, b) catch return self.rtErrSpan("integer overflow", span),
+        .sub => std.math.sub(i256, a, b) catch return self.rtErrSpan("integer overflow", span),
+        .mul => std.math.mul(i256, a, b) catch return self.rtErrSpan("integer overflow", span),
         .div => blk: {
             if (b == 0) return self.rtErrSpan("division by zero", span);
             break :blk @divTrunc(a, b);
@@ -303,26 +303,26 @@ fn intArithmetic(self: *Evaluator, op: Ast.BinaryOp, left: Integer, right: Integ
     return Value{ .integer = .{ .value = result, .type_ann = rt, .explicit = left.explicit or right.explicit } };
 }
 
-pub fn intPowPublic(self: *Evaluator, base: i128, exp: i128, span: Ast.Span) EvalError!i128 {
+pub fn intPowPublic(self: *Evaluator, base: i256, exp: i256, span: Ast.Span) EvalError!i256 {
     return intPow(self, base, exp, span);
 }
 
-fn intPow(self: *Evaluator, base: i128, exp: i128, span: Ast.Span) EvalError!i128 {
+fn intPow(self: *Evaluator, base: i256, exp: i256, span: Ast.Span) EvalError!i256 {
     if (exp < 0) return self.rtErrSpan("negative exponent for integer exponentiation", span);
     if (exp == 0) return 1;
     if (base == 0) return 0;
     if (base == 1) return 1;
-    if (base == -1) return if (@rem(exp, 2) == 0) @as(i128, 1) else @as(i128, -1);
+    if (base == -1) return if (@rem(exp, 2) == 0) @as(i256, 1) else @as(i256, -1);
 
-    var result: i128 = 1;
+    var result: i256 = 1;
     var b = base;
     var e = exp;
     while (e > 0) {
         if (@rem(e, 2) == 1)
-            result = std.math.mul(i128, result, b) catch return self.rtErrSpan("integer overflow in exponentiation", span);
+            result = std.math.mul(i256, result, b) catch return self.rtErrSpan("integer overflow in exponentiation", span);
         e = @divTrunc(e, 2);
         if (e > 0)
-            b = std.math.mul(i128, b, b) catch return self.rtErrSpan("integer overflow in exponentiation", span);
+            b = std.math.mul(i256, b, b) catch return self.rtErrSpan("integer overflow in exponentiation", span);
     }
     return result;
 }
@@ -447,7 +447,7 @@ fn evalRelational(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *
             .integer => |ri| blk: {
                 if (li.explicit and ri.explicit and !h.intTypesMatch(li.type_ann, ri.type_ann))
                     return self.typeErrSpan("integer type mismatch in comparison", span);
-                break :blk cmp(i128, li.value, ri.value, op);
+                break :blk cmp(i256, li.value, ri.value, op);
             },
             else => return self.typeErrSpan("relational comparison requires same types", span),
         },
@@ -720,11 +720,11 @@ pub fn evalUnaryOp(self: *Evaluator, op: Ast.UnaryOp, node: *const Ast.Node, sco
                         .signed => |w| w,
                         .unsigned => |w| w,
                     };
-                    const mask: i128 = if (width >= 128) -1 else (@as(i128, 1) << @intCast(width)) - 1;
-                    var result: i128 = (~i.value) & mask;
+                    const mask: i256 = if (width >= 128) -1 else (@as(i256, 1) << @intCast(width)) - 1;
+                    var result: i256 = (~i.value) & mask;
                     const is_signed = i.type_ann == .signed;
                     if (is_signed and width < 128) {
-                        const sign_bit: i128 = @as(i128, 1) << @intCast(width - 1);
+                        const sign_bit: i256 = @as(i256, 1) << @intCast(width - 1);
                         if ((result & sign_bit) != 0) result = result | ~mask;
                     }
                     break :blk Value{ .integer = .{ .value = result, .type_ann = i.type_ann, .explicit = i.explicit } };

@@ -5,7 +5,7 @@ const Ast = @import("Ast.zig");
 pub const IntegerType = union(enum) {
     /// Untyped (adopts type from context).
     arbitrary,
-    /// Signed: i8, i16, i32, i64, i128, etc.
+    /// Signed: i8, i16, i32, i64, i256, etc.
     signed: u16,
     /// Unsigned: u8, u16, u32, u64, u128, etc.
     unsigned: u16,
@@ -22,7 +22,7 @@ pub const FloatType = enum {
 
 /// Typed integer value with adoption tracking (§4.1).
 pub const Integer = struct {
-    value: i128,
+    value: i256,
     type_ann: IntegerType = .{ .signed = 64 },
     explicit: bool = false,
 };
@@ -168,7 +168,7 @@ pub const Value = union(enum) {
 
     // ── Convenience constructors ────────────────────────────
 
-    pub fn int(v: i128) Value {
+    pub fn int(v: i256) Value {
         return .{ .integer = .{ .value = v } };
     }
 

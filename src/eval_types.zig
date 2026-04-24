@@ -945,13 +945,13 @@ fn convertList(self: *Evaluator, value: Value, inner: *const Ast.TypeExpr, scope
 }
 
 fn convertToInteger(self: *Evaluator, value: Value, int_type: val.IntegerType, span: Ast.Span) EvalError!Value {
-    const result: i128 = switch (value) {
+    const result: i256 = switch (value) {
         .integer => |iv| iv.value,
         .float_val => |fv| blk: {
             if (std.math.isNan(fv.value) or std.math.isInf(fv.value))
                 return self.rtErr("cannot convert inf/nan to integer", span.line, span.col);
-            const max_i128: f64 = @floatFromInt(@as(i128, std.math.maxInt(i128)));
-            const min_i128: f64 = @floatFromInt(@as(i128, std.math.minInt(i128)));
+            const max_i128: f64 = @floatFromInt(@as(i256, std.math.maxInt(i256)));
+            const min_i128: f64 = @floatFromInt(@as(i256, std.math.minInt(i256)));
             if (fv.value > max_i128 or fv.value < min_i128)
                 return self.rtErr("float value out of range for integer conversion", span.line, span.col);
             break :blk @intFromFloat(fv.value);

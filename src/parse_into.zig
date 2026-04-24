@@ -54,7 +54,7 @@ fn parseValue(comptime T: type, allocator: std.mem.Allocator, value: Value) Erro
 // ── Integer ───────────────────────────────────────────────
 
 fn parseInteger(comptime T: type, value: Value) Error!T {
-    const raw: i128 = switch (value) {
+    const raw: i256 = switch (value) {
         .integer => |i| i.value,
         else => return error.TypeMismatch,
     };
@@ -68,7 +68,7 @@ fn parseInteger(comptime T: type, value: Value) Error!T {
         return @intCast(raw);
     }
 
-    // Smaller types: compile-time bounds fit in i128
+    // Smaller types: compile-time bounds fit in i256
     if (raw < std.math.minInt(T) or raw > std.math.maxInt(T)) return error.OutOfRange;
     return @intCast(raw);
 }

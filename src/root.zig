@@ -180,8 +180,8 @@ test "end-to-end parse and evaluate" {
     ;
 
     const result = parse(a, source).value;
-    try std.testing.expectEqual(@as(i128, 42), result.struct_val.get("x").?.integer.value);
-    try std.testing.expectEqual(@as(i128, 50), result.struct_val.get("y").?.integer.value);
+    try std.testing.expectEqual(@as(i256, 42), result.struct_val.get("x").?.integer.value);
+    try std.testing.expectEqual(@as(i256, 50), result.struct_val.get("y").?.integer.value);
     try std.testing.expectEqualStrings("hello", result.struct_val.get("greeting").?.string);
     try std.testing.expectEqual(true, result.struct_val.get("flag").?.bool_val);
 }
@@ -197,8 +197,8 @@ test "end-to-end forward references" {
     ;
 
     const result = parse(a, source).value;
-    try std.testing.expectEqual(@as(i128, 11), result.struct_val.get("a").?.integer.value);
-    try std.testing.expectEqual(@as(i128, 10), result.struct_val.get("b").?.integer.value);
+    try std.testing.expectEqual(@as(i256, 11), result.struct_val.get("a").?.integer.value);
+    try std.testing.expectEqual(@as(i256, 10), result.struct_val.get("b").?.integer.value);
 }
 
 test "end-to-end nested struct" {
@@ -215,10 +215,10 @@ test "end-to-end nested struct" {
     ;
 
     const result = parse(a, source).value;
-    try std.testing.expectEqual(@as(i128, 8080), result.struct_val.get("port").?.integer.value);
+    try std.testing.expectEqual(@as(i256, 8080), result.struct_val.get("port").?.integer.value);
     const server = result.struct_val.get("server").?.struct_val;
     try std.testing.expectEqualStrings("localhost", server.get("host").?.string);
-    try std.testing.expectEqual(@as(i128, 8080), server.get("port").?.integer.value);
+    try std.testing.expectEqual(@as(i256, 8080), server.get("port").?.integer.value);
 }
 
 test "end-to-end or_else with self-exclusion" {
@@ -231,7 +231,7 @@ test "end-to-end or_else with self-exclusion" {
     ;
 
     const result = parse(a, source).value;
-    try std.testing.expectEqual(@as(i128, 3000), result.struct_val.get("port").?.integer.value);
+    try std.testing.expectEqual(@as(i256, 3000), result.struct_val.get("port").?.integer.value);
 }
 
 test "end-to-end if expression" {
@@ -260,8 +260,8 @@ test "end-to-end list and member access" {
     ;
 
     const result = parse(a, source).value;
-    try std.testing.expectEqual(@as(i128, 10), result.struct_val.get("first").?.integer.value);
-    try std.testing.expectEqual(@as(i128, 20), result.struct_val.get("second").?.integer.value);
+    try std.testing.expectEqual(@as(i256, 10), result.struct_val.get("first").?.integer.value);
+    try std.testing.expectEqual(@as(i256, 20), result.struct_val.get("second").?.integer.value);
 }
 
 test "end-to-end parseInto" {
