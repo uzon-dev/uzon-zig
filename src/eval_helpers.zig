@@ -41,6 +41,9 @@ pub fn valueMatchesType(v: Value, type_name: []const u8) bool {
     if (std.mem.eql(u8, type_name, "tuple")) return v == .tuple;
     if (std.mem.eql(u8, type_name, "enum")) return v == .enum_val;
     if (std.mem.eql(u8, type_name, "function")) return v == .function;
+    // Opaque inline union type from parser — accept any scalar value
+    // (member-set checking TBD when TypeExpr carries the full union).
+    if (std.mem.eql(u8, type_name, "union")) return true;
 
     if (parseIntegerTypeName(type_name)) |target_type| {
         return switch (v) {
