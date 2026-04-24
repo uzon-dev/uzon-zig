@@ -9,7 +9,7 @@ const h = @import("eval_helpers.zig");
 const EvalError = Evaluator.EvalError;
 
 pub fn isBuiltinTypeName(name: []const u8) bool {
-    const builtins = [_][]const u8{ "bool", "string", "null", "integer", "float", "list", "tuple", "struct", "function" };
+    const builtins = [_][]const u8{ "bool", "string", "null", "integer", "float", "list", "tuple", "struct", "function", "union", "enum" };
     for (builtins) |b| if (std.mem.eql(u8, name, b)) return true;
     if (h.parseIntegerTypeName(name) != null) return true;
     if (h.parseFloatTypeName(name) != null) return true;
