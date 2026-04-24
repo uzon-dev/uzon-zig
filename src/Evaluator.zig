@@ -325,12 +325,28 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
             },
         };
 
-        if (value == .list and value.list.elements.len == 0 and value.list.element_type == null) {
-            self.collected_errors.append(self.allocator, UzonError.typeError(
-                self.allocator, "empty list requires a type annotation", binding.span.line, binding.span.col,
-            )) catch {};
-            had_errors = true;
-            continue;
+        if (value == .list and value.list.element_type == null) {
+            if (value.list.elements.len == 0) {
+                self.collected_errors.append(self.allocator, UzonError.typeError(
+                    self.allocator, "empty list requires a type annotation", binding.span.line, binding.span.col,
+                )) catch {};
+                had_errors = true;
+                continue;
+            }
+            // §3.4: a list composed entirely of `null` cannot infer an element
+            // type either.
+            var all_null = true;
+            for (value.list.elements) |e| if (e != .null_val) {
+                all_null = false;
+                break;
+            };
+            if (all_null) {
+                self.collected_errors.append(self.allocator, UzonError.typeError(
+                    self.allocator, "all-null list requires a type annotation", binding.span.line, binding.span.col,
+                )) catch {};
+                had_errors = true;
+                continue;
+            }
         }
 
         // §4.1: an unannotated integer defaults to i64
