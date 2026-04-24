@@ -722,12 +722,13 @@ fn parseStructOverride(self: *Parser) Error!*const Ast.Node {
 
 // Level 2: to
 fn parseConversion(self: *Parser) Error!*const Ast.Node {
-    const expr = try self.parseCallOrAccess();
-    self.skipNewlines();
-    if (self.at(.to)) {
+    var expr = try self.parseCallOrAccess();
+    while (true) {
+        self.skipNewlines();
+        if (!self.at(.to)) break;
         _ = self.advance();
         self.skipNewlines();
-        return self.node(.{ .conversion = .{ .expr = expr, .type_expr = try self.parseTypeExpr() } }, self.endSpan(expr.span));
+        expr = try self.node(.{ .conversion = .{ .expr = expr, .type_expr = try self.parseTypeExpr() } }, self.endSpan(expr.span));
     }
     return expr;
 }
