@@ -1195,6 +1195,14 @@ fn parseStandaloneUnion(self: *Parser, s: Ast.Span) Error!*const Ast.Node {
         try types.append(self.allocator, try self.parseTypeExpr());
     }
     if (types.items.len == 0) return self.fail("union must have at least one member type", s.line, s.col);
+    // §3.6: a union's member type MUST NOT itself be a union. We reject the
+    // literal shape here (anonymous inline union collapses to the `union`
+    // name); the named-union case is caught later at eval time.
+    for (types.items) |te| switch (te.data) {
+        .name => |n| if (std.mem.eql(u8, n, "union"))
+            return self.fail("union member cannot itself be a union", te.span.line, te.span.col),
+        else => {},
+    };
     const default_value = try self.defaultForTypeExpr(types.items[0], s);
     return self.node(.{ .from_union = .{ .value = default_value, .types = types.items } }, s);
 }

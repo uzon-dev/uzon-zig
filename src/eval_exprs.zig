@@ -681,6 +681,11 @@ pub fn evalFromUnion(self: *Evaluator, value_node: *const Ast.Node, types: []con
         for (type_names[0..i]) |prev| if (std.mem.eql(u8, tn, prev))
             return self.typeErrSpan("duplicate union member type", value_node.span);
     }
+    // §3.6: no nested unions — a member MUST NOT itself be a union.
+    for (type_names) |tn| {
+        if (scope.getType(tn)) |td| if (td.kind == .union_type)
+            return self.typeErrSpan("union member cannot itself be a named union", value_node.span);
+    }
 
     var adopted = value;
     for (types, type_names) |te, tn| {
