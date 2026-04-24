@@ -236,18 +236,46 @@ const BindingDepCtx = struct {
     allocator: std.mem.Allocator,
     name_to_idx: *const std.StringHashMapUnmanaged(usize),
     deps: *std.AutoHashMapUnmanaged(usize, void),
+    shadowed: *std.StringHashMapUnmanaged(void),
 };
 
 fn collectBindingDeps(allocator: std.mem.Allocator, node: *const Ast.Node, name_to_idx: *const std.StringHashMapUnmanaged(usize), deps: *std.AutoHashMapUnmanaged(usize, void)) void {
-    const ctx = BindingDepCtx{ .allocator = allocator, .name_to_idx = name_to_idx, .deps = deps };
+    var shadowed = std.StringHashMapUnmanaged(void){};
+    const ctx = BindingDepCtx{ .allocator = allocator, .name_to_idx = name_to_idx, .deps = deps, .shadowed = &shadowed };
     bindingDepVisitor(node, ctx);
 }
 
 fn bindingDepVisitor(node: *const Ast.Node, ctx: BindingDepCtx) void {
     if (node.kind == .identifier) {
-        if (ctx.name_to_idx.get(node.kind.identifier.name)) |idx| {
+        const name = node.kind.identifier.name;
+        if (ctx.shadowed.contains(name)) return;
+        if (ctx.name_to_idx.get(name)) |idx| {
             ctx.deps.put(ctx.allocator, idx, {}) catch {};
         }
+        return;
+    }
+    if (node.kind == .function_expr) {
+        const fe = node.kind.function_expr;
+        // Temporarily shadow parameter names and inner-binding names so
+        // identifier references inside the body aren't mis-attributed to
+        // outer bindings of the same name.
+        var added = std.ArrayListUnmanaged([]const u8){};
+        defer added.deinit(ctx.allocator);
+        for (fe.params) |p| {
+            if (!ctx.shadowed.contains(p.name)) {
+                ctx.shadowed.put(ctx.allocator, p.name, {}) catch {};
+                added.append(ctx.allocator, p.name) catch {};
+            }
+        }
+        for (fe.body_bindings) |b| {
+            if (!ctx.shadowed.contains(b.name)) {
+                ctx.shadowed.put(ctx.allocator, b.name, {}) catch {};
+                added.append(ctx.allocator, b.name) catch {};
+            }
+        }
+        for (fe.body_bindings) |b| bindingDepVisitor(b.value, ctx);
+        bindingDepVisitor(fe.body_expr, ctx);
+        for (added.items) |n| _ = ctx.shadowed.remove(n);
         return;
     }
     visitChildren(node, ctx, bindingDepVisitor);
