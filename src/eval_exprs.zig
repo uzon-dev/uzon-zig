@@ -1021,9 +1021,16 @@ pub fn evalFunctionExpr(self: *Evaluator, params: []const Ast.FunctionParam, ret
             return self.typeErrSpan("default value is undefined", dn.span);
         if (p.type_expr.data == .name) {
             const tn = p.type_expr.data.name;
-            const adopted = h.adoptToType(def_val, tn);
-            if (!h.valueMatchesType(adopted, tn))
+            // §3.9: refinement parameter type — check against base + predicate.
+            const check_name = if (scope.getType(tn)) |td|
+                (if (td.refinement) |rf| rf.base_type_name else tn)
+            else
+                tn;
+            const adopted = h.adoptToType(def_val, check_name);
+            if (!h.valueMatchesType(adopted, check_name))
                 return self.typeErrSpan("default value type does not match parameter type", dn.span);
+            if (scope.getType(tn)) |td| if (td.refinement) |rf|
+                try eval_types.checkRefinement(self, rf, adopted, scope, dn.span);
         }
     };
 
