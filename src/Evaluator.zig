@@ -425,6 +425,7 @@ pub fn evalNode(self: *Evaluator, node: *const Ast.Node, scope: *Scope, exclude:
         .member_access => |ma| self.evalMemberAccess(ma.object, ma.member, scope, exclude, node.span),
 
         .binary_op => |bo| eval_ops.evalBinaryOp(self, bo.op, bo.left, bo.right, scope, exclude, node.span),
+        .chained_cmp => |cc| eval_ops.evalChainedCmp(self, cc.operands, cc.ops, scope, exclude, node.span),
         .unary_op => |uo| eval_ops.evalUnaryOp(self, uo.op, uo.operand, scope, exclude, node.span),
         .or_else => |oe| eval_ops.evalOrElse(self, oe.left, oe.right, scope, exclude, node.span),
 

@@ -93,6 +93,68 @@ fn undefinedErrSingle(self: *Evaluator, msg: []const u8, node: *const Ast.Node, 
 
 // ── Binary operations ────────────────────────────────────────
 
+// §5.4 chained comparison: evaluate each operand once, short-circuit via AND.
+pub fn evalChainedCmp(self: *Evaluator, operands: []const *const Ast.Node, ops: []const Ast.BinaryOp, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
+    _ = span;
+    std.debug.assert(operands.len == ops.len + 1);
+    // Evaluate operands lazily with short-circuit; we still evaluate each
+    // referenced operand only once.
+    const values = try self.allocator.alloc(?Value, operands.len);
+    for (values) |*v| v.* = null;
+    // First two
+    values[0] = try self.evalNode(operands[0], scope, exclude);
+    var i: usize = 0;
+    while (i < ops.len) : (i += 1) {
+        values[i + 1] = try self.evalNode(operands[i + 1], scope, exclude);
+        // Reuse evalRelational logic: synthesize a binary_op AST evaluation path
+        const partial = try evalRelationalValues(self, ops[i], values[i].?, values[i + 1].?, operands[i].span, operands[i + 1].span);
+        if (!partial) return Value.boolean(false);
+    }
+    return Value.boolean(true);
+}
+
+fn evalRelationalValues(self: *Evaluator, op: Ast.BinaryOp, raw_l: Value, raw_r: Value, l_span: Ast.Span, r_span: Ast.Span) EvalError!bool {
+    _ = l_span;
+    _ = r_span;
+    if (raw_l.isUndefined() or raw_r.isUndefined())
+        return self.rtErrSpan("undefined value in comparison", Ast.Span{ .line = 0, .col = 0 });
+    const adopted = h.adoptNumericTypes(raw_l.unwrapTransparent(), raw_r.unwrapTransparent());
+    const l = adopted[0];
+    const r = adopted[1];
+    return switch (l) {
+        .integer => |li| switch (r) {
+            .integer => |ri| blk: {
+                if (li.explicit and ri.explicit and !h.intTypesMatch(li.type_ann, ri.type_ann))
+                    return self.typeErrSpan("integer type mismatch in comparison", Ast.Span{ .line = 0, .col = 0 });
+                break :blk cmp(i128, li.value, ri.value, op);
+            },
+            else => self.typeErrSpan("relational comparison requires same types", Ast.Span{ .line = 0, .col = 0 }),
+        },
+        .float_val => |lf| switch (r) {
+            .float_val => |rf| blk: {
+                if (lf.explicit and rf.explicit and lf.type_ann != rf.type_ann)
+                    return self.typeErrSpan("float type mismatch in comparison", Ast.Span{ .line = 0, .col = 0 });
+                break :blk cmp(f64, lf.value, rf.value, op);
+            },
+            else => self.typeErrSpan("relational comparison requires same types", Ast.Span{ .line = 0, .col = 0 }),
+        },
+        .string => |ls| switch (r) {
+            .string => |rs| blk: {
+                const ord = std.mem.order(u8, ls, rs);
+                break :blk switch (op) {
+                    .lt => ord == .lt,
+                    .le => ord != .gt,
+                    .gt => ord == .gt,
+                    .ge => ord != .lt,
+                    else => unreachable,
+                };
+            },
+            else => self.typeErrSpan("relational comparison requires same types", Ast.Span{ .line = 0, .col = 0 }),
+        },
+        else => self.typeErrSpan("relational comparison not supported for this type", Ast.Span{ .line = 0, .col = 0 }),
+    };
+}
+
 pub fn evalBinaryOp(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
     return switch (op) {
         .add, .sub, .mul, .div, .mod_ => evalArithmetic(self, op, ln, rn, scope, exclude, span),

@@ -479,20 +479,42 @@ fn parseMembership(self: *Parser) Error!*const Ast.Node {
     return left;
 }
 
-// Level 12: <, <=, >, >=
+// Level 12: <, <=, >, >= with §5.4 chained comparisons (monotonic direction).
 fn parseRelational(self: *Parser) Error!*const Ast.Node {
-    const left = try self.parseConcat();
+    const first = try self.parseConcat();
     self.skipNewlines();
-    const op: ?Ast.BinaryOp = switch (self.peek().type) {
+    const op0: ?Ast.BinaryOp = switch (self.peek().type) {
         .lt => .lt, .le => .le, .gt => .gt, .ge => .ge, else => null,
     };
-    if (op) |binary_op| {
-        _ = self.advance();
+    if (op0 == null) return first;
+    var operands = std.ArrayListUnmanaged(*const Ast.Node){};
+    var ops = std.ArrayListUnmanaged(Ast.BinaryOp){};
+    try operands.append(self.allocator, first);
+    _ = self.advance();
+    try ops.append(self.allocator, op0.?);
+    self.skipNewlines();
+    try operands.append(self.allocator, try self.parseConcat());
+    while (true) {
         self.skipNewlines();
-        const right = try self.parseConcat();
-        return self.node(.{ .binary_op = .{ .op = binary_op, .left = left, .right = right } }, self.endSpan(left.span));
+        const op_next: ?Ast.BinaryOp = switch (self.peek().type) {
+            .lt => .lt, .le => .le, .gt => .gt, .ge => .ge, else => null,
+        };
+        if (op_next == null) break;
+        const going_up = op0.? == .lt or op0.? == .le;
+        const next_up = op_next.? == .lt or op_next.? == .le;
+        if (going_up != next_up) {
+            const tok = self.peek();
+            return self.failSug("mixed-direction chained comparison", "use a single direction (all < / <= or all > / >=)", tok.line, tok.col);
+        }
+        _ = self.advance();
+        try ops.append(self.allocator, op_next.?);
+        self.skipNewlines();
+        try operands.append(self.allocator, try self.parseConcat());
     }
-    return left;
+    if (operands.items.len == 2) {
+        return self.node(.{ .binary_op = .{ .op = ops.items[0], .left = operands.items[0], .right = operands.items[1] } }, self.endSpan(first.span));
+    }
+    return self.node(.{ .chained_cmp = .{ .operands = try operands.toOwnedSlice(self.allocator), .ops = try ops.toOwnedSlice(self.allocator) } }, self.endSpan(first.span));
 }
 
 // Level 11: ++
@@ -1075,9 +1097,14 @@ fn parseNamedClause(self: *Parser, value: *const Ast.Node) Error!*const Ast.Node
         return self.node(.{ .named_variant = .{ .value = value, .tag = tag, .variants = try self.parseTaggedUnionVariants() } }, s);
     }
 
+    // §9 v0.12+: `named V as T` is the second admitted type_decl ordering.
+    // Build a named_variant with no inline variants, then wrap in type_annotation.
     if (self.at(.as)) {
-        const as_tok = self.peek();
-        return self.failSug("'as Type' must precede 'named variant'", "write 'value as Type named variant' instead", as_tok.line, as_tok.col);
+        const nv = try self.node(.{ .named_variant = .{ .value = value, .tag = tag, .variants = &.{} } }, s);
+        _ = self.advance(); // as
+        self.skipNewlines();
+        const type_expr = try self.parseTypeExpr();
+        return self.node(.{ .type_annotation = .{ .expr = nv, .type_expr = type_expr } }, s);
     }
 
     return self.node(.{ .named_variant = .{ .value = value, .tag = tag, .variants = &.{} } }, s);

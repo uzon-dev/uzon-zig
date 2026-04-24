@@ -130,6 +130,8 @@ pub const Node = struct {
         // Expressions (§5)
         member_access: struct { object: *const Node, member: []const u8 },
         binary_op: struct { op: BinaryOp, left: *const Node, right: *const Node },
+        /// §5.4 chained comparison: operands.len == ops.len + 1, all ops monotonic.
+        chained_cmp: struct { operands: []const *const Node, ops: []const BinaryOp },
         unary_op: struct { op: UnaryOp, operand: *const Node },
         or_else: struct { left: *const Node, right: *const Node },
         if_expr: struct { condition: *const Node, then_branch: *const Node, else_branch: *const Node },
