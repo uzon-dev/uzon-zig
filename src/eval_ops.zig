@@ -408,6 +408,10 @@ fn evalRelational(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *
     const raw_r = ops[1];
     if (raw_l.isUndefined() or raw_r.isUndefined())
         return undefinedErr(self, "undefined value in comparison", ln, rn, raw_l, raw_r, span);
+    // §3.1 + §5.4: runtime-null flowing into a comparison is a runtime error
+    // (not a type error), so short-circuit branches can suppress it.
+    if (raw_l == .null_val or raw_r == .null_val)
+        return self.rtErrSpan("null value in comparison", span);
     if (raw_l == .tagged_union and raw_r == .tagged_union)
         return self.typeErrSpan("ordered comparison between tagged unions is not defined", span);
     if (raw_l == .function or raw_r == .function)
@@ -823,16 +827,11 @@ fn evalInOperator(self: *Evaluator, ln: *const Ast.Node, rn: *const Ast.Node, sc
 // ── Speculative evaluation ──────────────────────────────────
 
 pub fn speculativeEval(self: *Evaluator, node: *const Ast.Node, scope: *Scope, exclude: ?[]const u8) EvalError!void {
-    const pre_collected = self.collected_errors.items.len;
+    // §5.6 + §5.9: short-circuited branches suppress RUNTIME errors only.
+    // Type errors are not suppressed — a statically ill-typed branch is
+    // reachable-in-principle and must be reported.
     _ = self.evalNode(node, scope, exclude) catch |e| switch (e) {
-        // §5.6 + §5.9: short-circuited branches suppress both runtime and
-        // type errors, since the branch is unreachable when the circuit
-        // was taken.
-        error.UzonRuntime, error.UzonType => {
-            self.collected_errors.shrinkRetainingCapacity(pre_collected);
-            self.last_error = null;
-            return;
-        },
+        error.UzonRuntime => return,
         else => return e,
     };
 }
