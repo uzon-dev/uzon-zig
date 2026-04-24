@@ -789,6 +789,27 @@ fn valueToString(self: *Evaluator, v: Value) EvalError![]const u8 {
         .enum_val => |e| e.value,
         .union_val => |u| self.valueToString(u.value.*),
         .tagged_union => |tu| self.valueToString(tu.value.*),
+        .list => |l| blk: {
+            var buf = std.ArrayListUnmanaged(u8){};
+            try buf.appendSlice(self.allocator, "[");
+            for (l.elements, 0..) |e, i| {
+                if (i > 0) try buf.appendSlice(self.allocator, ", ");
+                try buf.appendSlice(self.allocator, try self.valueToString(e));
+            }
+            try buf.appendSlice(self.allocator, "]");
+            break :blk buf.items;
+        },
+        .tuple => |t| blk: {
+            var buf = std.ArrayListUnmanaged(u8){};
+            try buf.appendSlice(self.allocator, "(");
+            for (t.elements, 0..) |e, i| {
+                if (i > 0) try buf.appendSlice(self.allocator, ", ");
+                try buf.appendSlice(self.allocator, try self.valueToString(e));
+            }
+            if (t.elements.len == 1) try buf.appendSlice(self.allocator, ",");
+            try buf.appendSlice(self.allocator, ")");
+            break :blk buf.items;
+        },
         else => self.typeErr("cannot convert compound type to string", 0, 0),
     };
 }

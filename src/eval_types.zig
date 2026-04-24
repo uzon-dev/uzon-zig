@@ -704,8 +704,17 @@ pub fn evalConversion(self: *Evaluator, expr_node: *const Ast.Node, type_expr: *
         else => return self.typeErr("complex type conversions not yet supported", span.line, span.col),
     };
 
-    if (std.mem.eql(u8, type_name, "bool"))
-        return if (value == .bool_val) value else self.typeErr("cannot convert to bool", span.line, span.col);
+    if (std.mem.eql(u8, type_name, "bool")) {
+        if (value == .bool_val) return value;
+        // §5.11.2: `"true"` / `"false"` convert to bool; other strings are a
+        // runtime error.
+        if (value == .string) {
+            if (std.mem.eql(u8, value.string, "true")) return Value.boolean(true);
+            if (std.mem.eql(u8, value.string, "false")) return Value.boolean(false);
+            return self.rtErr("string is not \"true\" or \"false\"", span.line, span.col);
+        }
+        return self.typeErr("cannot convert to bool", span.line, span.col);
+    }
     if (std.mem.eql(u8, type_name, "null"))
         return if (value == .null_val) value else self.typeErr("cannot convert to null", span.line, span.col);
     if (value.isUndefined()) return .undefined;
