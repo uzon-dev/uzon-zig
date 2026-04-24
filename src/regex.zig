@@ -61,26 +61,26 @@ const Parser = struct {
     fn parseAtomQuantified(p: *Parser) Error!Node {
         const atom = try p.parseAtom();
         const q = p.peek() orelse return atom;
-        switch (q) {
-            '*' => {
+        const result: Node = switch (q) {
+            '*' => blk: {
                 p.advance();
                 const boxed = try p.alloc.create(Node);
                 boxed.* = atom;
-                return Node{ .star = boxed };
+                break :blk Node{ .star = boxed };
             },
-            '+' => {
+            '+' => blk: {
                 p.advance();
                 const boxed = try p.alloc.create(Node);
                 boxed.* = atom;
-                return Node{ .plus = boxed };
+                break :blk Node{ .plus = boxed };
             },
-            '?' => {
+            '?' => blk: {
                 p.advance();
                 const boxed = try p.alloc.create(Node);
                 boxed.* = atom;
-                return Node{ .opt = boxed };
+                break :blk Node{ .opt = boxed };
             },
-            '{' => {
+            '{' => blk: {
                 p.advance();
                 const n = try p.parseNumber();
                 if (p.peek() == @as(u8, ',')) {
@@ -90,16 +90,21 @@ const Parser = struct {
                     p.advance();
                     const boxed = try p.alloc.create(Node);
                     boxed.* = atom;
-                    return Node{ .between = .{ .inner = boxed, .min = n, .max = m } };
+                    break :blk Node{ .between = .{ .inner = boxed, .min = n, .max = m } };
                 }
                 if (p.peek() != @as(u8, '}')) return error.MalformedPattern;
                 p.advance();
                 const boxed = try p.alloc.create(Node);
                 boxed.* = atom;
-                return Node{ .exact = .{ .inner = boxed, .n = n } };
+                break :blk Node{ .exact = .{ .inner = boxed, .n = n } };
             },
             else => return atom,
-        }
+        };
+        // §5.16.7: non-greedy marker `?` after a quantifier. Because
+        // std.matches is fully anchored, greedy and non-greedy admit the
+        // same accept/reject decisions — consume and ignore.
+        if (p.peek() == @as(u8, '?')) p.advance();
+        return result;
     }
 
     fn parseNumber(p: *Parser) Error!u32 {
@@ -124,6 +129,12 @@ const Parser = struct {
             },
             '(' => {
                 p.advance();
+                // §5.16.7: accept non-capturing groups `(?:...)`. We don't
+                // track capture groups, so the prefix is ignored.
+                if (p.peek() == @as(u8, '?') and p.pos + 1 < p.src.len and p.src[p.pos + 1] == ':') {
+                    p.advance();
+                    p.advance();
+                }
                 const inner = try p.parseAlt();
                 if (p.peek() != @as(u8, ')')) return error.MalformedPattern;
                 p.advance();

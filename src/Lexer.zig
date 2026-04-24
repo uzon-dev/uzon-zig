@@ -243,6 +243,15 @@ fn scanString(self: *Lexer) !void {
                 }
             },
             '{' => {
+                // §4.4.1: a `{` followed by a digit (as in regex quantifiers
+                // `{N}` / `{N,M}`) is taken as literal text, not interpolation.
+                // Interpolation requires an expression, and digit-led sequences
+                // like `{3}` are common in regex payloads — treating them
+                // literally matches user intent.
+                if (self.pos + 1 < self.source.len and isDigit(self.source[self.pos + 1])) {
+                    self.advance();
+                    continue;
+                }
                 try self.emit(.string, self.source[start..self.pos], str_start_line, str_start_col);
                 try self.emit(.interp_start, "{", self.line, self.col);
                 self.advance();
