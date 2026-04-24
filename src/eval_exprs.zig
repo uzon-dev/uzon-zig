@@ -1215,9 +1215,17 @@ pub fn evalFunctionCall(self: *Evaluator, callee_node: *const Ast.Node, arg_node
             if (param.type_expr.data == .name) {
                 const tn = param.type_expr.data.name;
                 if (!arg.isNull() and !arg.isUndefined()) {
-                    arg = h.adoptToType(arg, tn);
-                    if (!h.valueMatchesType(arg, tn))
+                    // §3.9: when the declared type is a refinement, check the
+                    // argument against its base type and then run the predicate.
+                    const check_name = if (func_scope.getType(tn)) |td|
+                        (if (td.refinement) |rf| rf.base_type_name else tn)
+                    else
+                        tn;
+                    arg = h.adoptToType(arg, check_name);
+                    if (!h.valueMatchesType(arg, check_name))
                         return self.typeErrSpan("argument type mismatch", arg_span);
+                    if (func_scope.getType(tn)) |td| if (td.refinement) |rf|
+                        try eval_types.checkRefinement(self, rf, arg, &func_scope, arg_span);
                 }
             }
             try func_scope.define(param.name, arg);
