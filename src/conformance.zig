@@ -35,29 +35,63 @@ fn collectUzonFiles(
     return slice;
 }
 
-/// Collect names of subdirectories under `dir_path` that contain an entry.uzon.
-/// Used for multi-file fixtures where entry.uzon imports sibling modules.
+/// Collect (subdir, entry-filename) pairs for multi-file fixtures. A
+/// subdirectory's entry file is `entry.uzon` when present; otherwise, if the
+/// subdirectory contains exactly one `.uzon` file, that single file acts as
+/// the entry (supports fixtures like `self_import/loop.uzon` where the
+/// filename encodes the scenario).
+const EntryFixture = struct { subdir: []const u8, entry: []const u8 };
+
 fn collectEntryDirs(
     allocator: std.mem.Allocator,
     dir_path: []const u8,
-) ![]const []const u8 {
+) ![]const EntryFixture {
     var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return &.{};
     defer dir.close();
 
-    var names = std.ArrayListUnmanaged([]const u8){};
+    var fixtures = std.ArrayListUnmanaged(EntryFixture){};
     var it = dir.iterate();
     while (try it.next()) |entry| {
         if (entry.kind != .directory) continue;
-        const sub_path = try std.fmt.allocPrint(allocator, "{s}/{s}/entry.uzon", .{ dir_path, entry.name });
+        const entry_path = try std.fmt.allocPrint(allocator, "{s}/{s}/entry.uzon", .{ dir_path, entry.name });
+        defer allocator.free(entry_path);
+        if (std.fs.cwd().access(entry_path, .{})) |_| {
+            try fixtures.append(allocator, .{
+                .subdir = try allocator.dupe(u8, entry.name),
+                .entry = try allocator.dupe(u8, "entry.uzon"),
+            });
+            continue;
+        } else |_| {}
+
+        // Fallback: a single `.uzon` file in the subdirectory becomes the
+        // entry. Multiple `.uzon` files without an explicit entry.uzon are
+        // skipped (the shape is ambiguous).
+        const sub_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, entry.name });
         defer allocator.free(sub_path);
-        std.fs.cwd().access(sub_path, .{}) catch continue;
-        try names.append(allocator, try allocator.dupe(u8, entry.name));
+        var sub_dir = std.fs.cwd().openDir(sub_path, .{ .iterate = true }) catch continue;
+        defer sub_dir.close();
+        var sub_it = sub_dir.iterate();
+        var count: usize = 0;
+        var single: ?[]const u8 = null;
+        while (try sub_it.next()) |f| {
+            if (f.kind != .file) continue;
+            if (!std.mem.endsWith(u8, f.name, ".uzon")) continue;
+            if (std.mem.endsWith(u8, f.name, ".expected.uzon")) continue;
+            count += 1;
+            if (single == null) single = try allocator.dupe(u8, f.name);
+        }
+        if (count == 1) {
+            try fixtures.append(allocator, .{
+                .subdir = try allocator.dupe(u8, entry.name),
+                .entry = single.?,
+            });
+        }
     }
 
-    const slice = try names.toOwnedSlice(allocator);
-    std.mem.sort([]const u8, slice, {}, struct {
-        fn lt(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.order(u8, a, b) == .lt;
+    const slice = try fixtures.toOwnedSlice(allocator);
+    std.mem.sort(EntryFixture, slice, {}, struct {
+        fn lt(_: void, a: EntryFixture, b: EntryFixture) bool {
+            return std.mem.order(u8, a.subdir, b.subdir) == .lt;
         }
     }.lt);
     return slice;
@@ -183,19 +217,21 @@ fn runParseValidDir(alloc: std.mem.Allocator, collector: std.mem.Allocator, dir_
         }
     }
 
-    // Multi-file fixtures: each subdirectory with entry.uzon is a single fixture
-    const subdirs = try collectEntryDirs(collector, dir_path);
-    for (subdirs) |subdir| {
+    // Multi-file fixtures: each subdirectory with an entry file is a single
+    // fixture. Entry is `entry.uzon` when present, otherwise a single .uzon
+    // file in the subdirectory.
+    const fixtures = try collectEntryDirs(collector, dir_path);
+    for (fixtures) |fx| {
         var test_arena = std.heap.ArenaAllocator.init(alloc);
         defer test_arena.deinit();
 
-        const path = try std.fmt.allocPrint(test_arena.allocator(), "{s}/{s}/entry.uzon", .{ dir_path, subdir });
+        const path = try std.fmt.allocPrint(test_arena.allocator(), "{s}/{s}/{s}", .{ dir_path, fx.subdir, fx.entry });
         const result = try runParseValidTest(test_arena.allocator(), path);
         switch (result) {
             .pass => pass.* += 1,
             .fail => {
                 fail.* += 1;
-                try failed_names.append(collector, try std.fmt.allocPrint(collector, "{s}/{s}/entry.uzon", .{ dir_path, subdir }));
+                try failed_names.append(collector, try std.fmt.allocPrint(collector, "{s}/{s}/{s}", .{ dir_path, fx.subdir, fx.entry }));
             },
             .skip => skip.* += 1,
         }
@@ -261,19 +297,20 @@ fn runParseInvalidDir(alloc: std.mem.Allocator, collector: std.mem.Allocator, di
         }
     }
 
-    // Multi-file fixtures: each subdirectory with entry.uzon is a single fixture
-    const subdirs = try collectEntryDirs(collector, dir_path);
-    for (subdirs) |subdir| {
+    // Multi-file fixtures: each subdirectory with an entry file is a single
+    // fixture (entry.uzon, or a single .uzon file in the subdir).
+    const fixtures = try collectEntryDirs(collector, dir_path);
+    for (fixtures) |fx| {
         var test_arena = std.heap.ArenaAllocator.init(alloc);
         defer test_arena.deinit();
 
-        const path = try std.fmt.allocPrint(test_arena.allocator(), "{s}/{s}/entry.uzon", .{ dir_path, subdir });
+        const path = try std.fmt.allocPrint(test_arena.allocator(), "{s}/{s}/{s}", .{ dir_path, fx.subdir, fx.entry });
         const result = try runParseInvalidTest(test_arena.allocator(), path);
         switch (result) {
             .pass => pass.* += 1,
             .fail => {
                 fail.* += 1;
-                try failed_names.append(collector, try std.fmt.allocPrint(collector, "{s}/{s}/entry.uzon", .{ dir_path, subdir }));
+                try failed_names.append(collector, try std.fmt.allocPrint(collector, "{s}/{s}/{s}", .{ dir_path, fx.subdir, fx.entry }));
             },
             .skip => skip.* += 1,
         }
