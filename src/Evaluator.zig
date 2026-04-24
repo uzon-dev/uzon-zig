@@ -606,7 +606,15 @@ fn unescapeString(self: *Evaluator, raw: []const u8, span: Ast.Span) EvalError![
 // ── Identifier and member access ─────────────────────────────
 
 fn evalIdentifier(self: *Evaluator, name: []const u8, scope: *Scope, exclude: ?[]const u8) EvalError!Value {
-    _ = self;
+    // §3.9 + §6.2: a standalone refinement declaration introduces a type
+    // only; its name is not a value binding. Reject references in value
+    // position with a clear error.
+    if (scope.getType(name)) |td| if (td.refinement != null) {
+        return self.typeErrSpan(
+            "refinement type name used in value position",
+            .{ .line = 0, .col = 0 },
+        );
+    };
     if (scope.get(name, exclude)) |v| return v.*;
     return .undefined;
 }
