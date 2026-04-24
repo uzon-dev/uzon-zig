@@ -564,14 +564,6 @@ fn unescapeString(self: *Evaluator, raw: []const u8, span: Ast.Span) EvalError![
                     try buf.append(self.allocator, '{');
                     i += 2;
                 },
-                // §4.4.1: accept `\}` as a literal `}`. The spec marks `\}`
-                // as an error form, but much of the conformance corpus
-                // mirrors `\{`/`\}` as a pair for readability, so we accept
-                // both rather than reject one.
-                '}' => {
-                    try buf.append(self.allocator, '}');
-                    i += 2;
-                },
                 'x' => {
                     if (i + 3 >= raw.len) return self.rtErrSpan("incomplete \\x escape sequence", span);
                     const hi = std.fmt.charToDigit(raw[i + 2], 16) catch return self.rtErrSpan("invalid hex digit in \\x escape", span);
