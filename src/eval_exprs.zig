@@ -685,8 +685,17 @@ pub fn evalFromUnion(self: *Evaluator, value_node: *const Ast.Node, types: []con
     var adopted = value;
     for (types, type_names) |te, tn| {
         if (te.data == .name) {
-            const candidate = h.adoptToType(value, tn);
-            if (h.valueMatchesType(candidate, tn)) {
+            // §3.9: member is a refinement — check against its base and run
+            // the predicate. A value that passes both is admitted.
+            const check_tn = if (scope.getType(tn)) |td|
+                (if (td.refinement) |_| td.refinement.?.base_type_name else tn)
+            else
+                tn;
+            const candidate = h.adoptToType(value, check_tn);
+            if (h.valueMatchesType(candidate, check_tn)) {
+                if (scope.getType(tn)) |td| if (td.refinement) |rf| {
+                    eval_types.checkRefinement(self, rf, candidate, scope, value_node.span) catch continue;
+                };
                 adopted = candidate;
                 break;
             }

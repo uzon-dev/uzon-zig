@@ -473,11 +473,17 @@ fn stampNamedType(self: *Evaluator, expr_node: *const Ast.Node, td: *const val.T
         if (lit_cat) |cat| {
             var chosen_idx: ?usize = null;
             for (ut.types, 0..) |mt, i| {
+                // §3.9: if member is a refinement, look through to its base
+                // type when choosing by category.
+                const base_mt = if (scope.getType(mt)) |mtd|
+                    (if (mtd.refinement) |rf| rf.base_type_name else mt)
+                else
+                    mt;
                 const mc: ?[]const u8 = blk: {
-                    if (h.parseIntegerTypeName(mt) != null) break :blk "integer";
-                    if (h.parseFloatTypeName(mt) != null) break :blk "float";
-                    if (std.mem.eql(u8, mt, "string")) break :blk "string";
-                    if (std.mem.eql(u8, mt, "bool")) break :blk "bool";
+                    if (h.parseIntegerTypeName(base_mt) != null) break :blk "integer";
+                    if (h.parseFloatTypeName(base_mt) != null) break :blk "float";
+                    if (std.mem.eql(u8, base_mt, "string")) break :blk "string";
+                    if (std.mem.eql(u8, base_mt, "bool")) break :blk "bool";
                     break :blk null;
                 };
                 if (mc) |m| if (std.mem.eql(u8, m, cat)) {
@@ -496,9 +502,17 @@ fn stampNamedType(self: *Evaluator, expr_node: *const Ast.Node, td: *const val.T
             }
             if (chosen_idx) |ci| {
                 const mt = ut.types[ci];
-                const adopted = h.adoptToType(value, mt);
-                if (!h.valueMatchesType(adopted, mt))
+                // §3.9: if the chosen member is a refinement, adopt to the
+                // base and run the predicate.
+                const base_mt = if (scope.getType(mt)) |mtd|
+                    (if (mtd.refinement) |rf| rf.base_type_name else mt)
+                else
+                    mt;
+                const adopted = h.adoptToType(value, base_mt);
+                if (!h.valueMatchesType(adopted, base_mt))
                     return self.typeErr("union value does not match chosen member type", span.line, span.col);
+                if (scope.getType(mt)) |mtd| if (mtd.refinement) |rf|
+                    try checkRefinement(self, rf, adopted, scope, span);
                 const vp = try self.allocator.create(Value);
                 vp.* = adopted;
                 return Value{ .union_val = .{ .value = vp, .types = ut.types, .type_name = type_name } };
