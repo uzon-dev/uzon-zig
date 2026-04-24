@@ -1224,6 +1224,11 @@ pub fn evalFunctionCall(self: *Evaluator, callee_node: *const Ast.Node, arg_node
                     arg = h.adoptToType(arg, check_name);
                     if (!h.valueMatchesType(arg, check_name))
                         return self.typeErrSpan("argument type mismatch", arg_span);
+                    // §5 + §6.1: range-check adopted integer/float against the
+                    // declared parameter type (e.g. 300 does not fit u8).
+                    if (arg == .integer) if (h.parseIntegerTypeName(check_name)) |it|
+                        if (!h.intFitsType(arg.integer.value, it))
+                            return self.rtErrSpan("argument value out of range for parameter type", arg_span);
                     if (func_scope.getType(tn)) |td| if (td.refinement) |rf|
                         try eval_types.checkRefinement(self, rf, arg, &func_scope, arg_span);
                 }
