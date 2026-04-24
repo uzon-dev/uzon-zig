@@ -179,6 +179,18 @@ fn scanNormal(self: *Lexer) !void {
             try self.emit(.caret, "^", start_line, start_col);
             self.advance();
         },
+        '&' => {
+            try self.emit(.amp, "&", start_line, start_col);
+            self.advance();
+        },
+        '|' => {
+            try self.emit(.pipe, "|", start_line, start_col);
+            self.advance();
+        },
+        '~' => {
+            try self.emit(.tilde, "~", start_line, start_col);
+            self.advance();
+        },
         '<' => try self.scanLt(start_line, start_col),
         '>' => try self.scanGt(start_line, start_col),
         '-' => try self.scanMinus(start_line, start_col),
@@ -337,14 +349,8 @@ fn scanPlus(self: *Lexer, line: u32, col: u32) !void {
 }
 
 fn scanStar(self: *Lexer, line: u32, col: u32) !void {
-    if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '*') {
-        try self.emit(.star_star, "**", line, col);
-        self.advance();
-        self.advance();
-    } else {
-        try self.emit(.star, "*", line, col);
-        self.advance();
-    }
+    try self.emit(.star, "*", line, col);
+    self.advance();
 }
 
 fn scanSlash(self: *Lexer, line: u32, col: u32) !void {
@@ -364,6 +370,10 @@ fn scanLt(self: *Lexer, line: u32, col: u32) !void {
         try self.emit(.le, "<=", line, col);
         self.advance();
         self.advance();
+    } else if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '<') {
+        try self.emit(.lshift, "<<", line, col);
+        self.advance();
+        self.advance();
     } else {
         try self.emit(.lt, "<", line, col);
         self.advance();
@@ -373,6 +383,10 @@ fn scanLt(self: *Lexer, line: u32, col: u32) !void {
 fn scanGt(self: *Lexer, line: u32, col: u32) !void {
     if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '=') {
         try self.emit(.ge, ">=", line, col);
+        self.advance();
+        self.advance();
+    } else if (self.pos + 1 < self.source.len and self.source[self.pos + 1] == '>') {
+        try self.emit(.rshift, ">>", line, col);
         self.advance();
         self.advance();
     } else {

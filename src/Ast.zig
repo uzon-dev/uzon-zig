@@ -15,9 +15,7 @@ pub const BinaryOp = enum {
     mul,
     div,
     mod_,
-    pow,
     concat,
-    repeat,
     lt,
     le,
     gt,
@@ -31,12 +29,19 @@ pub const BinaryOp = enum {
     is_type,
     is_not_type,
     in_,
+    // §5.3a bitwise
+    bit_and,
+    bit_or,
+    bit_xor,
+    shl,
+    shr,
 };
 
 /// Unary operators.
 pub const UnaryOp = enum {
     negate,
     not,
+    bit_not,
 };
 
 /// Mode of a `case` expression (§5.10).

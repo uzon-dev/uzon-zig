@@ -497,15 +497,72 @@ fn parseRelational(self: *Parser) Error!*const Ast.Node {
 
 // Level 11: ++
 fn parseConcat(self: *Parser) Error!*const Ast.Node {
-    var left = try self.parseAddition();
+    var left = try self.parseBitOr();
     while (blk: {
         self.skipNewlines();
         break :blk self.at(.plus_plus);
     }) {
         _ = self.advance();
         self.skipNewlines();
-        const right_cc = try self.parseAddition();
+        const right_cc = try self.parseBitOr();
         left = try self.node(.{ .binary_op = .{ .op = .concat, .left = left, .right = right_cc } }, self.endSpan(left.span));
+    }
+    return left;
+}
+
+// §5.3a bitwise levels, precedence low→high: | < ^ < & < shift < additive
+fn parseBitOr(self: *Parser) Error!*const Ast.Node {
+    var left = try self.parseBitXor();
+    while (true) {
+        self.skipNewlines();
+        if (!self.at(.pipe)) break;
+        _ = self.advance();
+        self.skipNewlines();
+        const right = try self.parseBitXor();
+        left = try self.node(.{ .binary_op = .{ .op = .bit_or, .left = left, .right = right } }, self.endSpan(left.span));
+    }
+    return left;
+}
+
+fn parseBitXor(self: *Parser) Error!*const Ast.Node {
+    var left = try self.parseBitAnd();
+    while (true) {
+        self.skipNewlines();
+        if (!self.at(.caret)) break;
+        _ = self.advance();
+        self.skipNewlines();
+        const right = try self.parseBitAnd();
+        left = try self.node(.{ .binary_op = .{ .op = .bit_xor, .left = left, .right = right } }, self.endSpan(left.span));
+    }
+    return left;
+}
+
+fn parseBitAnd(self: *Parser) Error!*const Ast.Node {
+    var left = try self.parseShift();
+    while (true) {
+        self.skipNewlines();
+        if (!self.at(.amp)) break;
+        _ = self.advance();
+        self.skipNewlines();
+        const right = try self.parseShift();
+        left = try self.node(.{ .binary_op = .{ .op = .bit_and, .left = left, .right = right } }, self.endSpan(left.span));
+    }
+    return left;
+}
+
+fn parseShift(self: *Parser) Error!*const Ast.Node {
+    var left = try self.parseAddition();
+    while (true) {
+        self.skipNewlines();
+        const op: ?Ast.BinaryOp = switch (self.peek().type) {
+            .lshift => .shl, .rshift => .shr, else => null,
+        };
+        if (op) |bo| {
+            _ = self.advance();
+            self.skipNewlines();
+            const right = try self.parseAddition();
+            left = try self.node(.{ .binary_op = .{ .op = bo, .left = left, .right = right } }, self.endSpan(left.span));
+        } else break;
     }
     return left;
 }
@@ -528,13 +585,13 @@ fn parseAddition(self: *Parser) Error!*const Ast.Node {
     return left;
 }
 
-// Level 9: *, /, %, **
+// Level 9: *, /, %
 fn parseMultiplication(self: *Parser) Error!*const Ast.Node {
     var left = try self.parseUnary();
     while (true) {
         self.skipNewlines();
         const op: ?Ast.BinaryOp = switch (self.peek().type) {
-            .star => .mul, .slash => .div, .percent => .mod_, .star_star => .repeat, else => null,
+            .star => .mul, .slash => .div, .percent => .mod_, else => null,
         };
         if (op) |binary_op| {
             _ = self.advance();
@@ -546,29 +603,23 @@ fn parseMultiplication(self: *Parser) Error!*const Ast.Node {
     return left;
 }
 
-// Level 8: unary -
+// Level 8: unary -, ~ (§5.3a)
 fn parseUnary(self: *Parser) Error!*const Ast.Node {
     if (self.at(.minus)) {
         const s = self.span();
         _ = self.advance();
         self.skipNewlines();
-        const operand = try self.parsePower();
+        const operand = try self.parseTypeDecl();
         return self.node(.{ .unary_op = .{ .op = .negate, .operand = operand } }, self.endSpan(s));
     }
-    return self.parsePower();
-}
-
-// Level 7: ^ (right-associative)
-fn parsePower(self: *Parser) Error!*const Ast.Node {
-    const base = try self.parseTypeDecl();
-    self.skipNewlines();
-    if (self.at(.caret)) {
+    if (self.at(.tilde)) {
+        const s = self.span();
         _ = self.advance();
         self.skipNewlines();
-        const right = try self.parseUnary();
-        return self.node(.{ .binary_op = .{ .op = .pow, .left = base, .right = right } }, self.endSpan(base.span));
+        const operand = try self.parseTypeDecl();
+        return self.node(.{ .unary_op = .{ .op = .bit_not, .operand = operand } }, self.endSpan(s));
     }
-    return base;
+    return self.parseTypeDecl();
 }
 
 // ── Type declarations (levels 2-6) ─────────────────────────

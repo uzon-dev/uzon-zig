@@ -95,16 +95,78 @@ fn undefinedErrSingle(self: *Evaluator, msg: []const u8, node: *const Ast.Node, 
 
 pub fn evalBinaryOp(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
     return switch (op) {
-        .add, .sub, .mul, .div, .mod_, .pow => evalArithmetic(self, op, ln, rn, scope, exclude, span),
+        .add, .sub, .mul, .div, .mod_ => evalArithmetic(self, op, ln, rn, scope, exclude, span),
         .concat => evalConcat(self, ln, rn, scope, exclude, span),
-        .repeat => evalRepeat(self, ln, rn, scope, exclude, span),
         .lt, .le, .gt, .ge => evalRelational(self, op, ln, rn, scope, exclude, span),
         .eq, .neq => evalEquality(self, op, ln, rn, scope, exclude, span),
         .@"and", .@"or" => evalLogical(self, op, ln, rn, scope, exclude, span),
         .is_type, .is_not_type => evalIsType(self, op, ln, rn, scope, exclude, span),
         .is_named, .is_not_named => evalIsNamed(self, op, ln, rn, scope, exclude, span),
         .in_ => evalInOperator(self, ln, rn, scope, exclude, span),
+        .bit_and, .bit_or, .bit_xor, .shl, .shr => evalBitwise(self, op, ln, rn, scope, exclude, span),
     };
+}
+
+fn evalBitwise(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
+    const ops = evalBinaryOperands(self, ln, rn, scope, exclude);
+    const raw_l = ops[0];
+    const raw_r = ops[1];
+    if (raw_l.isUndefined() or raw_r.isUndefined())
+        return undefinedErr(self, "undefined value in bitwise operation", ln, rn, raw_l, raw_r, span);
+    const l_t = raw_l.unwrapTransparent();
+    const r_t = raw_r.unwrapTransparent();
+    const li = switch (l_t) {
+        .integer => |i| i,
+        else => return self.typeErrSpan("bitwise operators require integer operands", span),
+    };
+    const ri = switch (r_t) {
+        .integer => |i| i,
+        else => return self.typeErrSpan("bitwise operators require integer operands", span),
+    };
+    if (li.explicit and ri.explicit and !h.intTypesMatch(li.type_ann, ri.type_ann))
+        return self.typeErrSpan("bitwise requires matching integer types", span);
+    const rt = h.adoptIntType(li, ri);
+    const width: u32 = switch (rt) {
+        .arbitrary => 64,
+        .signed => |w| w,
+        .unsigned => |w| w,
+    };
+    const is_signed = rt == .signed;
+    var a = li.value;
+    var b = ri.value;
+    const result: i128 = switch (op) {
+        .bit_and => a & b,
+        .bit_or => a | b,
+        .bit_xor => a ^ b,
+        .shl => blk: {
+            if (b < 0 or b >= @as(i128, width))
+                return self.rtErrSpan("shift count out of range", span);
+            const shifted = a << @intCast(b);
+            // Mask to width
+            const mask: i128 = (@as(i128, 1) << @intCast(width)) - 1;
+            var masked = shifted & mask;
+            if (is_signed and width < 128) {
+                const sign_bit: i128 = @as(i128, 1) << @intCast(width - 1);
+                if ((masked & sign_bit) != 0) masked = masked | ~mask;
+            }
+            break :blk masked;
+        },
+        .shr => blk: {
+            if (b < 0 or b >= @as(i128, width))
+                return self.rtErrSpan("shift count out of range", span);
+            if (is_signed) {
+                break :blk a >> @intCast(b);
+            } else {
+                const mask: i128 = (@as(i128, 1) << @intCast(width)) - 1;
+                const u: u128 = @intCast(a & mask);
+                break :blk @as(i128, @intCast(u >> @intCast(b)));
+            }
+        },
+        else => unreachable,
+    };
+    _ = &a;
+    _ = &b;
+    return Value{ .integer = .{ .value = result, .type_ann = rt, .explicit = li.explicit or ri.explicit } };
 }
 
 fn evalArithmetic(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *const Ast.Node, scope: *Scope, exclude: ?[]const u8, span: Ast.Span) EvalError!Value {
@@ -151,7 +213,6 @@ fn intArithmetic(self: *Evaluator, op: Ast.BinaryOp, left: Integer, right: Integ
             if (b == 0) return self.rtErrSpan("modulo by zero", span);
             break :blk @rem(a, b);
         },
-        .pow => try intPow(self, a, b, span),
         else => unreachable,
     };
 
@@ -159,6 +220,10 @@ fn intArithmetic(self: *Evaluator, op: Ast.BinaryOp, left: Integer, right: Integ
         return self.rtErrSpan("integer overflow for type", span);
 
     return Value{ .integer = .{ .value = result, .type_ann = rt, .explicit = left.explicit or right.explicit } };
+}
+
+pub fn intPowPublic(self: *Evaluator, base: i128, exp: i128, span: Ast.Span) EvalError!i128 {
+    return intPow(self, base, exp, span);
 }
 
 fn intPow(self: *Evaluator, base: i128, exp: i128, span: Ast.Span) EvalError!i128 {
@@ -186,16 +251,12 @@ fn floatArithmetic(self: *Evaluator, op: Ast.BinaryOp, left: Float, right: Float
         return self.typeErrSpan("float type mismatch in arithmetic", span);
 
     const rt = h.adoptFloatType(left, right);
-    // §5.3: negative base with non-integer exponent is a runtime error
-    if (op == .pow and left.value < 0 and @floor(right.value) != right.value)
-        return self.rtErrSpan("negative base with non-integer exponent", span);
     const result: f64 = switch (op) {
         .add => left.value + right.value,
         .sub => left.value - right.value,
         .mul => left.value * right.value,
         .div => left.value / right.value,
         .mod_ => @rem(left.value, right.value),
-        .pow => std.math.pow(f64, left.value, right.value),
         else => unreachable,
     };
     return Value{ .float_val = .{ .value = result, .type_ann = rt, .explicit = left.explicit or right.explicit } };
@@ -549,6 +610,28 @@ pub fn evalUnaryOp(self: *Evaluator, op: Ast.UnaryOp, node: *const Ast.Node, sco
             return switch (operand) {
                 .bool_val => |bv| Value.boolean(!bv),
                 else => self.typeErrSpan("'not' requires bool operand", span),
+            };
+        },
+        .bit_not => {
+            if (operand.isUndefined()) return undefinedErrSingle(self, "undefined value in '~' operation", node, span);
+            const unwrapped = operand.unwrapTransparent();
+            return switch (unwrapped) {
+                .integer => |i| blk: {
+                    const width: u32 = switch (i.type_ann) {
+                        .arbitrary => 64,
+                        .signed => |w| w,
+                        .unsigned => |w| w,
+                    };
+                    const mask: i128 = if (width >= 128) -1 else (@as(i128, 1) << @intCast(width)) - 1;
+                    var result: i128 = (~i.value) & mask;
+                    const is_signed = i.type_ann == .signed;
+                    if (is_signed and width < 128) {
+                        const sign_bit: i128 = @as(i128, 1) << @intCast(width - 1);
+                        if ((result & sign_bit) != 0) result = result | ~mask;
+                    }
+                    break :blk Value{ .integer = .{ .value = result, .type_ann = i.type_ann, .explicit = i.explicit } };
+                },
+                else => self.typeErrSpan("'~' requires integer operand", span),
             };
         },
     }

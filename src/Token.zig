@@ -75,9 +75,14 @@ pub const Type = enum {
     star,
     slash,
     percent,
-    caret,
+    caret, // bitwise XOR (§5.3a)
     plus_plus,
-    star_star,
+    // Bitwise §5.3a
+    amp,
+    pipe,
+    tilde,
+    lshift,
+    rshift,
     lt,
     le,
     gt,
