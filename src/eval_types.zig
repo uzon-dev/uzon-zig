@@ -266,6 +266,11 @@ pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_exp
         if (value != .string) return self.typeErr("value is not string", span.line, span.col);
         return value;
     }
+    // §3.2 bare-shape `struct {}` annotation — accept any struct value.
+    if (std.mem.eql(u8, type_name, "struct")) {
+        if (value != .struct_val) return self.typeErr("value is not a struct", span.line, span.col);
+        return value;
+    }
     if (std.mem.eql(u8, type_name, "null")) {
         if (value != .null_val) return self.typeErr("value is not null", span.line, span.col);
         return value;

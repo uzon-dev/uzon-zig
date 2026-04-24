@@ -1353,6 +1353,27 @@ fn parseTypeExpr(self: *Parser) Error!Ast.TypeExpr {
     if (self.at(.l_bracket)) return self.parseListType(s);
     if (self.eat(.null_)) return .{ .data = .null_type, .span = s };
 
+    // §3.2 `struct { ... }` as a type expression. For now we accept the shape
+    // opaquely and use the generic `struct` category — sufficient for the
+    // `{} as struct {}` / `std.hasKey` entry points. The braces act as
+    // boundary tokens so we skip balanced content.
+    if (self.at(.struct_)) {
+        _ = self.advance();
+        self.skipNewlines();
+        if (self.at(.l_brace)) {
+            _ = self.advance();
+            var depth: usize = 1;
+            while (depth > 0 and self.pos < self.tokens.len) {
+                const t = self.peek().type;
+                if (t == .l_brace) depth += 1;
+                if (t == .r_brace) depth -= 1;
+                if (t == .eof) break;
+                _ = self.advance();
+            }
+        }
+        return .{ .data = .{ .name = "struct" }, .span = s };
+    }
+
     const first = try self.expect(.identifier);
     var path = std.ArrayListUnmanaged([]const u8){};
     try path.append(self.allocator, first.lexeme);
