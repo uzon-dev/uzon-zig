@@ -131,9 +131,16 @@ pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_exp
                     if (v_e.isUndefined() or v_e.isNull()) {
                         adopted[j] = v_e;
                     } else {
-                        const a = h.adoptToType(v_e, et_name);
-                        if (!h.valueMatchesType(a, et_name))
+                        // §3.9: refinement type — check base + predicate.
+                        const check_name = if (scope.getType(et_name)) |td|
+                            (if (td.refinement) |rf| rf.base_type_name else et_name)
+                        else
+                            et_name;
+                        const a = h.adoptToType(v_e, check_name);
+                        if (!h.valueMatchesType(a, check_name))
                             return self.typeErrSpan("tuple element type does not match declared type", span);
+                        if (scope.getType(et_name)) |td| if (td.refinement) |rf|
+                            try checkRefinement(self, rf, a, scope, span);
                         adopted[j] = a;
                     }
                 } else {
