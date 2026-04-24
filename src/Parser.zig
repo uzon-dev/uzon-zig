@@ -1391,6 +1391,31 @@ fn parseTypeExpr(self: *Parser) Error!Ast.TypeExpr {
         return .{ .data = .{ .name = "union" }, .span = s };
     }
 
+    // §3.8 inline function type `function T1 returns T2` / `function returns T`.
+    // Consumed opaquely and collapsed to the `function` category — suitable as
+    // a return-type placeholder for closures.
+    if (self.at(.function)) {
+        _ = self.advance();
+        self.skipNewlines();
+        while (self.pos < self.tokens.len) {
+            if (self.at(.returns)) {
+                _ = self.advance();
+                self.skipNewlines();
+                _ = try self.parseTypeExpr();
+                break;
+            }
+            _ = try self.parseTypeExpr();
+            self.skipNewlines();
+            if (self.at(.comma)) {
+                _ = self.advance();
+                self.skipNewlines();
+                continue;
+            }
+            if (!self.at(.returns)) break;
+        }
+        return .{ .data = .{ .name = "function" }, .span = s };
+    }
+
     const first = try self.expect(.identifier);
     var path = std.ArrayListUnmanaged([]const u8){};
     try path.append(self.allocator, first.lexeme);

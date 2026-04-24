@@ -275,6 +275,11 @@ pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_exp
     // lost the member list when collapsing to a `union` category). The
     // annotation passes through without further checking.
     if (std.mem.eql(u8, type_name, "union")) return value;
+    // §3.8 inline function type is accepted opaquely.
+    if (std.mem.eql(u8, type_name, "function")) {
+        if (value != .function) return self.typeErr("value is not a function", span.line, span.col);
+        return value;
+    }
     if (std.mem.eql(u8, type_name, "null")) {
         if (value != .null_val) return self.typeErr("value is not null", span.line, span.col);
         return value;
