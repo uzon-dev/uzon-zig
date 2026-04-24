@@ -759,7 +759,16 @@ fn evalInOperator(self: *Evaluator, ln: *const Ast.Node, rn: *const Ast.Node, sc
     if (raw_needle.isUndefined() or raw_haystack.isUndefined())
         return undefinedErr(self, "undefined value in 'in' operation", ln, rn, raw_needle, raw_haystack, span);
 
-    const needle = raw_needle.unwrapTransparent();
+    // §5.8.1 + §3.7.2: `in` sees the tagged-union wrapper (compares both tag
+    // and inner value), so don't unwrap a tagged-union needle when the list
+    // element type is also tagged.
+    const haystack_first_tagged = blk: {
+        const u = raw_haystack.unwrapTransparent();
+        if (u != .list) break :blk false;
+        for (u.list.elements) |e| if (e == .tagged_union) break :blk true;
+        break :blk false;
+    };
+    const needle = if (raw_needle == .tagged_union and haystack_first_tagged) raw_needle else raw_needle.unwrapTransparent();
     const haystack = raw_haystack.unwrapTransparent();
 
     return switch (haystack) {
