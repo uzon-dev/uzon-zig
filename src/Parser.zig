@@ -747,6 +747,10 @@ fn parseCallOrAccess(self: *Parser) Error!*const Ast.Node {
             // §5.15: ( on same line → function call
             _ = self.advance();
             self.skipNewlines();
+            // §4.4.2: multi-part multiline strings are not allowed in call
+            // argument positions.
+            const prev_suppress = self.suppress_multiline_string;
+            self.suppress_multiline_string = true;
             var args = std.ArrayListUnmanaged(*const Ast.Node){};
             if (!self.at(.r_paren)) {
                 try args.append(self.allocator, try self.parseExpression());
@@ -756,6 +760,7 @@ fn parseCallOrAccess(self: *Parser) Error!*const Ast.Node {
                     try args.append(self.allocator, try self.parseExpression());
                 }
             }
+            self.suppress_multiline_string = prev_suppress;
             self.skipNewlines();
             _ = try self.expect(.r_paren);
             expr = try self.node(.{ .function_call = .{ .callee = expr, .args = args.items } }, self.endSpan(expr.span));
@@ -884,6 +889,11 @@ fn parseListLiteral(self: *Parser) Error!*const Ast.Node {
     const tok = try self.expect(.l_bracket);
     self.skipNewlines();
     var elements = std.ArrayListUnmanaged(*const Ast.Node){};
+    // §4.4.2: multi-part multiline strings are not allowed inside list
+    // element positions.
+    const prev_suppress = self.suppress_multiline_string;
+    self.suppress_multiline_string = true;
+    defer self.suppress_multiline_string = prev_suppress;
     if (!self.at(.r_bracket)) {
         try elements.append(self.allocator, try self.parseExpression());
         while (self.skipNewlinesEat(.comma)) {
@@ -906,6 +916,12 @@ fn parseTupleOrGroup(self: *Parser) Error!*const Ast.Node {
         _ = self.advance();
         return self.node(.{ .tuple_literal = .{ .elements = &.{} } }, self.endSpan(s));
     }
+
+    // §4.4.2: multi-part multiline strings are not allowed in tuple elements
+    // or parenthesized groups.
+    const prev_suppress = self.suppress_multiline_string;
+    self.suppress_multiline_string = true;
+    defer self.suppress_multiline_string = prev_suppress;
 
     const first = try self.parseExpression();
     self.skipNewlines();
@@ -986,7 +1002,12 @@ fn parseStringSegment(self: *Parser, parts: *std.ArrayListUnmanaged(Ast.StringPa
             .interp_start => {
                 _ = self.advance();
                 self.skipNewlines();
+                // §4.4.2: multi-part multiline strings are not allowed inside
+                // an interpolation expression.
+                const prev_suppress = self.suppress_multiline_string;
+                self.suppress_multiline_string = true;
                 const expr = try self.parseExpression();
+                self.suppress_multiline_string = prev_suppress;
                 self.skipNewlines();
                 _ = try self.expect(.interp_end);
                 try parts.append(self.allocator, .{ .interpolation = expr });
