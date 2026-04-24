@@ -600,18 +600,27 @@ pub fn resolveShorthandAgainstType(self: *Evaluator, sentinel: Value, td: *const
                     return self.typeErrSpan("null cannot be used for variant with non-null inner type", span);
                 }
                 if (!adopted.isNull() and !adopted.isUndefined()) {
-                    adopted = h.adoptToType(adopted, vtn);
+                    // §3.9: if variant's declared inner type is a refinement,
+                    // match against its base and run the predicate.
+                    const check_vtn = if (scope) |sc|
+                        (if (sc.getType(vtn)) |inner_td2|
+                            (if (inner_td2.refinement) |rf| rf.base_type_name else vtn)
+                        else
+                            vtn)
+                    else
+                        vtn;
+                    adopted = h.adoptToType(adopted, check_vtn);
                     // The variant declaration already establishes the inner type, so
                     // don't mark a primitive as explicit — otherwise stringify emits a
                     // redundant `as T` inside the tagged union, which is ungrammatical.
                     if (adopted == .integer and adopted.integer.explicit) {
-                        if (h.parseIntegerTypeName(vtn)) |it| {
+                        if (h.parseIntegerTypeName(check_vtn)) |it| {
                             if (h.intTypesMatch(adopted.integer.type_ann, it))
                                 adopted = Value{ .integer = .{ .value = adopted.integer.value, .type_ann = adopted.integer.type_ann, .explicit = false } };
                         }
                     }
                     if (adopted == .float_val and adopted.float_val.explicit) {
-                        if (h.parseFloatTypeName(vtn)) |ft| {
+                        if (h.parseFloatTypeName(check_vtn)) |ft| {
                             if (adopted.float_val.type_ann == ft)
                                 adopted = Value{ .float_val = .{ .value = adopted.float_val.value, .type_ann = adopted.float_val.type_ann, .explicit = false } };
                         }
@@ -622,14 +631,17 @@ pub fn resolveShorthandAgainstType(self: *Evaluator, sentinel: Value, td: *const
                     if (adopted == .function and adopted.function.type_name == null)
                         adopted = Value{ .function = .{ .params = adopted.function.params, .return_type = adopted.function.return_type, .body_bindings = adopted.function.body_bindings, .body_expr = adopted.function.body_expr, .captured_keys = adopted.function.captured_keys, .captured_values = adopted.function.captured_values, .captured_types = adopted.function.captured_types, .type_name = vtn } };
                     // For compound inner types (tuple "(...)", list "[...]"), accept by shape.
-                    const is_compound_type = vtn.len > 0 and (vtn[0] == '(' or vtn[0] == '[');
+                    const is_compound_type = check_vtn.len > 0 and (check_vtn[0] == '(' or check_vtn[0] == '[');
                     const matches_compound = is_compound_type and switch (adopted) {
-                        .tuple => vtn[0] == '(',
-                        .list => vtn[0] == '[',
+                        .tuple => check_vtn[0] == '(',
+                        .list => check_vtn[0] == '[',
                         else => false,
                     };
-                    if (!matches_compound and !h.valueMatchesType(adopted, vtn))
+                    if (!matches_compound and !h.valueMatchesType(adopted, check_vtn))
                         return self.typeErrSpan("variant shorthand inner value does not match variant's declared type", span);
+                    // Run predicate if variant type is a refinement.
+                    if (scope) |sc| if (sc.getType(vtn)) |inner_td3| if (inner_td3.refinement) |rf|
+                        try eval_types.checkRefinement(self, rf, adopted, sc, span);
                 }
             }
             const vp = try self.allocator.create(Value);
