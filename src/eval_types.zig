@@ -1135,10 +1135,23 @@ pub fn buildTypeDef(self: *Evaluator, name: []const u8, value: Value, ast: ?*con
                     };
                     break :blk2 null;
                 } else null;
+                // §3.9: if the field's literal wrote `as SomeRefinedType`, the
+                // refinement name is what we want to remember — not the base
+                // type that the value has already been adopted to. Pull the
+                // annotation from the AST first.
+                const ast_ann: ?[]const u8 = blk2: {
+                    for (field_asts) |fb| if (std.mem.eql(u8, fb.name, key)) {
+                        if (fb.value.kind == .type_annotation) {
+                            const te = fb.value.kind.type_annotation.type_expr;
+                            if (te.data == .name) break :blk2 te.data.name;
+                        }
+                    };
+                    break :blk2 null;
+                };
                 fields[fi] = .{
                     .name = key,
                     .type_category = fv.typeName(),
-                    .type_annotation = if (typed_null_ann) |tn| tn else switch (fv) {
+                    .type_annotation = if (typed_null_ann) |tn| tn else (ast_ann orelse switch (fv) {
                         .integer => |iv| if (iv.explicit) h.intTypeNameAlloc(self.allocator, iv.type_ann) else null,
                         .float_val => |fvv| if (fvv.explicit) h.floatTypeName(fvv.type_ann) else null,
                         .struct_val => |sv| sv.type_name,
@@ -1147,7 +1160,7 @@ pub fn buildTypeDef(self: *Evaluator, name: []const u8, value: Value, ast: ?*con
                         .tagged_union => |tu| tu.type_name,
                         .list => |lv| lv.element_type,
                         else => null,
-                    },
+                    }),
                     .default = fv,
                 };
             }
