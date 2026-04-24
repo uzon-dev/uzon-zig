@@ -821,8 +821,16 @@ fn evalInOperator(self: *Evaluator, ln: *const Ast.Node, rn: *const Ast.Node, sc
 // ── Speculative evaluation ──────────────────────────────────
 
 pub fn speculativeEval(self: *Evaluator, node: *const Ast.Node, scope: *Scope, exclude: ?[]const u8) EvalError!void {
+    const pre_collected = self.collected_errors.items.len;
     _ = self.evalNode(node, scope, exclude) catch |e| switch (e) {
-        error.UzonRuntime => return,
+        // §5.6 + §5.9: short-circuited branches suppress both runtime and
+        // type errors, since the branch is unreachable when the circuit
+        // was taken.
+        error.UzonRuntime, error.UzonType => {
+            self.collected_errors.shrinkRetainingCapacity(pre_collected);
+            self.last_error = null;
+            return;
+        },
         else => return e,
     };
 }

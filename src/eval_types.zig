@@ -244,7 +244,13 @@ pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_exp
     // Named type annotation (from `called` registry)
     if (scope.getType(type_name)) |td| {
         // §3.9: refinement type — check base type, then evaluate predicate.
+        // When the value is null (universal nullability §3.1), skip the base
+        // type check — the predicate's behavior on null decides membership.
         if (td.refinement) |rf| {
+            if (value == .null_val) {
+                try checkRefinement(self, rf, value, scope, span);
+                return value;
+            }
             const base_te = Ast.TypeExpr{ .data = .{ .name = rf.base_type_name }, .span = span };
             const adopted = try evalTypeAnnotation(self, expr_node, &base_te, scope, exclude, span);
             try checkRefinement(self, rf, adopted, scope, span);
