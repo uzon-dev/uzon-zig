@@ -162,6 +162,10 @@ fn visitChildren(node: *const Ast.Node, ctx: anytype, visitor: anytype) void {
         .chained_cmp => |cc| {
             for (cc.operands) |op| visitor(op, ctx);
         },
+        .refinement => |rf| {
+            visitor(rf.base, ctx);
+            visitor(rf.predicate, ctx);
+        },
         .unary_op => |uo| visitor(uo.operand, ctx),
         .or_else => |oe| {
             visitor(oe.left, ctx);

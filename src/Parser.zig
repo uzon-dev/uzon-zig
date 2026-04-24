@@ -647,16 +647,23 @@ fn parseUnary(self: *Parser) Error!*const Ast.Node {
 // ── Type declarations (levels 2-6) ─────────────────────────
 
 fn parseTypeDecl(self: *Parser) Error!*const Ast.Node {
-    const expr = try self.parseTypeAnnotation();
-    // NEWLINE_SEP: don't consume from/named if a new binding starts
+    var expr = try self.parseTypeAnnotation();
+    // NEWLINE_SEP: don't consume from/named/where if a new binding starts
     if (self.at(.newline)) {
         var look = self.pos;
         while (look < self.tokens.len and self.tokens[look].type == .newline) look += 1;
         if (look < self.tokens.len and self.isBindingStartAt(look)) return expr;
     }
     self.skipNewlines();
-    if (self.at(.from)) return self.parseFromClause(expr);
-    if (self.at(.named)) return self.parseNamedClause(expr);
+    if (self.at(.from)) expr = try self.parseFromClause(expr);
+    if (self.at(.named)) expr = try self.parseNamedClause(expr);
+    self.skipNewlines();
+    if (self.at(.where)) {
+        _ = self.advance();
+        self.skipNewlines();
+        const pred = try self.parseExpression();
+        expr = try self.node(.{ .refinement = .{ .base = expr, .predicate = pred } }, self.endSpan(expr.span));
+    }
     return expr;
 }
 

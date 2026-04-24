@@ -58,6 +58,9 @@ pub const Type = enum {
     returns,
     default,
 
+    // Keywords — refinement (§3.9)
+    where,
+
     // Keywords — reserved
     lazy,
 
@@ -171,6 +174,7 @@ pub const keywords = std.StaticStringMap(Type).initComptime(.{
     .{ "function", .function },
     .{ "returns", .returns },
     .{ "default", .default },
+    .{ "where", .where },
     .{ "lazy", .lazy },
     .{ "true", .true_ },
     .{ "false", .false_ },
@@ -187,7 +191,7 @@ const keyword_strings = [_][]const u8{
     "to",        "of",
     "and",       "or",        "not",      "if",      "then",     "else",
     "case",      "when",      "env",      "struct",  "in",       "function",
-    "returns",   "default",   "lazy",     "true",    "false",    "null",
+    "returns",   "default",   "lazy",     "true",    "false",    "null",     "where",
     "undefined", "inf",       "nan",
 };
 

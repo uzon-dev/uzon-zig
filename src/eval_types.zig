@@ -81,6 +81,7 @@ pub fn computeNamedDefault(self: *Evaluator, type_name: []const u8, scope: *Scop
             },
             .list_type => |lt| return Value{ .list = .{ .elements = &.{}, .element_type = lt.element_type, .type_name = type_name } },
             .function_type => return self.typeErrSpan("cannot default-construct function type", span),
+            .refinement_primitive => |rp| return computeNamedDefault(self, rp.base, scope, span),
         }
     }
     return self.typeErrSpan("unknown type in default computation", span);
@@ -242,6 +243,13 @@ pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_exp
 
     // Named type annotation (from `called` registry)
     if (scope.getType(type_name)) |td| {
+        // §3.9: refinement type — check base type, then evaluate predicate.
+        if (td.refinement) |rf| {
+            const base_te = Ast.TypeExpr{ .data = .{ .name = rf.base_type_name }, .span = span };
+            const adopted = try evalTypeAnnotation(self, expr_node, &base_te, scope, exclude, span);
+            try checkRefinement(self, rf, adopted, scope, span);
+            return adopted;
+        }
         // §6.1: `null as T` is valid only when T admits null. Named enums and
         // named structs never admit null. Untagged unions must include `null` as
         // a member type. (Tagged unions are handled by evalNamedVariant when the
@@ -259,13 +267,26 @@ pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_exp
                     if (!has_null) return self.typeErr("cannot annotate null as union type without null member", span.line, span.col);
                 },
                 .function_type, .list_type => return self.typeErr("cannot annotate null as this type", span.line, span.col),
-                .tagged_union_type => {},
+                .tagged_union_type, .refinement_primitive => {},
             }
         }
         return stampNamedType(self, expr_node, td, type_name, value, scope, span);
     }
 
     return self.typeErr("unknown type name in annotation", span.line, span.col);
+}
+
+/// §3.9 evaluate a refinement predicate with `self` bound to the candidate.
+pub fn checkRefinement(self_ev: *Evaluator, rf: val.TypeDef.Refinement, value: Value, scope: *Scope, span: Ast.Span) EvalError!void {
+    var inner = Scope.init(self_ev.allocator);
+    inner.parent = scope;
+    try inner.define("self", value);
+    const result = try self_ev.evalNode(rf.predicate, &inner, null);
+    const ok = switch (result) {
+        .bool_val => |b| b,
+        else => return self_ev.typeErrSpan("refinement predicate must evaluate to bool", span),
+    };
+    if (!ok) return self_ev.typeErrSpan("value does not satisfy refinement predicate", span);
 }
 
 fn annotateList(self: *Evaluator, expr_node: *const Ast.Node, inner_type: *const Ast.TypeExpr, value: Value, scope: *Scope, span: Ast.Span) EvalError!Value {
@@ -684,8 +705,14 @@ pub fn evalConversion(self: *Evaluator, expr_node: *const Ast.Node, type_expr: *
     if (h.parseFloatTypeName(type_name)) |ft| return convertToFloat(self, value, ft, span);
     if (std.mem.eql(u8, type_name, "string")) return convertToString(self, value, span);
 
-    // Named enum: string → enum
+    // Named enum / refinement: dispatch by kind
     if (scope.getType(type_name)) |td| {
+        if (td.refinement) |rf| {
+            const base_te = Ast.TypeExpr{ .data = .{ .name = rf.base_type_name }, .span = span };
+            const converted = try evalConversion(self, expr_node, &base_te, scope, exclude, span);
+            try checkRefinement(self, rf, converted, scope, span);
+            return converted;
+        }
         return switch (td.kind) {
             .enum_type => |et| switch (value) {
                 .string => |s| blk: {
@@ -881,6 +908,7 @@ pub fn typeDefsEquivalent(a: *const val.TypeDef, b: *const val.TypeDef) bool {
             const b_et = bl.element_type orelse "";
             break :blk std.mem.eql(u8, a_et, b_et);
         },
+        .refinement_primitive => |ar| std.mem.eql(u8, ar.base, b.kind.refinement_primitive.base),
     };
 }
 

@@ -131,6 +131,13 @@ const Parser = struct {
             },
             '[' => return p.parseCharClass(),
             '\\' => return p.parseEscape(),
+            // §5.16.7: std.matches is anchored on both ends, so `^` at start
+            // and `$` at end are redundant but accepted. Treat as an empty
+            // concat so subsequent atoms continue from the same position.
+            '^', '$' => {
+                p.advance();
+                return Node{ .concat = &.{} };
+            },
             '*', '+', '?', '{', '}', ')', '|' => return error.MalformedPattern,
             else => return p.parseLiteralCodepoint(),
         }

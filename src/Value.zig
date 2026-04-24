@@ -103,6 +103,15 @@ pub const Function = struct {
 pub const TypeDef = struct {
     name: []const u8,
     kind: Kind,
+    /// §3.9 optional refinement predicate — if set, `as T` / `is type T` /
+    /// `to T` evaluates the predicate with `self` bound to the candidate.
+    refinement: ?Refinement = null,
+
+    pub const Refinement = struct {
+        base_type_name: []const u8,
+        /// Predicate AST node, evaluated with `self` in scope.
+        predicate: *const Ast.Node,
+    };
 
     pub const Kind = union(enum) {
         enum_type: struct { variants: []const []const u8 },
@@ -111,6 +120,8 @@ pub const TypeDef = struct {
         struct_type: struct { fields: []const FieldInfo },
         function_type: struct { param_types: []const []const u8, return_type: []const u8 },
         list_type: struct { element_type: ?[]const u8 },
+        /// §3.9 refinement on a primitive base (u16, string, etc.).
+        refinement_primitive: struct { base: []const u8 },
     };
 
     pub const FieldInfo = struct {

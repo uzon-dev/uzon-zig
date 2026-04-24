@@ -275,6 +275,30 @@ pub fn evalBindings(self: *Evaluator, bindings: []const Ast.Binding, scope: *Sco
             continue;
         }
 
+        // §3.9: a refinement declaration `T is Base where P` registers T as
+        // a refinement type. It has no runtime value; the binding is a type.
+        if (binding.value.kind == .refinement) {
+            const rf = binding.value.kind.refinement;
+            const base_node = rf.base;
+            const base_name: ?[]const u8 = if (base_node.kind == .identifier) base_node.kind.identifier.name else null;
+            if (base_name == null) {
+                self.collected_errors.append(self.allocator, UzonError.typeError(
+                    self.allocator, "refinement base must be a type name", binding.span.line, binding.span.col,
+                )) catch {};
+                had_errors = true;
+                continue;
+            }
+            const td = val.TypeDef{
+                .name = binding.name,
+                .kind = .{ .refinement_primitive = .{ .base = base_name.? } },
+                .refinement = .{ .base_type_name = base_name.?, .predicate = rf.predicate },
+            };
+            scope.defineType(binding.name, td) catch {};
+            // Bind the name to a sentinel null so later references don't fail lookup.
+            try scope.define(binding.name, Value.null_val);
+            continue;
+        }
+
         const pre_count = self.collected_errors.items.len;
         // §3.4.1: the list-level `as T` annotation applies to the list value as-is.
         // If T is `[X]` or a named list type, it adopts normally; any other type is
@@ -453,6 +477,9 @@ pub fn evalNode(self: *Evaluator, node: *const Ast.Node, scope: *Scope, exclude:
         .struct_import => |si| eval_exprs.evalStructImport(self, si.path, si.path_span, node.span),
         .type_pattern => .undefined, // only meaningful inside case type evaluation
         .variant_shorthand => |vs| eval_exprs.evalVariantShorthand(self, vs.variant, vs.inner, scope, exclude, node.span),
+        // §3.9 refinement node should only appear on the RHS of a type
+        // declaration binding and is handled by evalBindings directly.
+        .refinement => self.typeErrSpan("refinement type used outside a type declaration", node.span),
     };
 }
 

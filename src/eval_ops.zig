@@ -705,7 +705,25 @@ fn evalIsType(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *cons
     const value = try self.evalNode(ln, scope, exclude);
     if (value.isUndefined()) return self.rtErrSpan("undefined value in 'is type' check", ln.span);
     const unwrapped = value.unwrapTransparent();
-    const matches = switch (rn.kind) {
+    var matches: bool = undefined;
+    // §3.9 is type RefinedType: structural match on base AND predicate.
+    if (rn.kind == .identifier) {
+        const id = rn.kind.identifier.name;
+        if (scope.getType(id)) |td| {
+            if (td.refinement) |rf| {
+                matches = h.valueMatchesType(unwrapped, rf.base_type_name);
+                if (matches) {
+                    const et = @import("eval_types.zig");
+                    et.checkRefinement(self, rf, unwrapped, scope, span) catch {
+                        self.last_error = null;
+                        matches = false;
+                    };
+                }
+                return Value.boolean(if (op == .is_type) matches else !matches);
+            }
+        }
+    }
+    matches = switch (rn.kind) {
         .identifier => |id| h.valueMatchesType(unwrapped, id.name),
         .type_pattern => |tp| @import("eval_exprs.zig").valueMatchesTypeExpr(unwrapped, tp.type_expr),
         else => return self.typeErrSpan("'is type' requires type name", span),
