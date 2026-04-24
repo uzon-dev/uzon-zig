@@ -814,10 +814,37 @@ pub fn evalStructOverride(self: *Evaluator, base_node: *const Ast.Node, override
     }
     const bs = base.struct_val;
     const overrides = try self.evalNode(overrides_node, scope, exclude);
-    const os = switch (overrides) {
+    var os = switch (overrides) {
         .struct_val => |s| s,
         else => return self.typeErrSpan("'with' overrides must be a struct", span),
     };
+
+    // §3.5 R4: context-aware resolution for override fields. When a field's
+    // declared type is a named enum/tagged-union and the override value is a
+    // bare identifier that produced `undefined`, look up the identifier as
+    // a variant of the declared type and patch the override value.
+    const field_infos = resolveFieldInfos(scope, bs.type_name);
+    if (field_infos != null and overrides_node.kind == .struct_literal) {
+        const ovs = overrides_node.kind.struct_literal.fields;
+        var patched_values = try self.allocator.alloc(Value, os.values.len);
+        @memcpy(patched_values, os.values);
+        for (os.keys, 0..) |k, ki| {
+            if (!patched_values[ki].isUndefined()) continue;
+            const fi = lookupFieldInfo(field_infos, k) orelse continue;
+            const ann = fi.type_annotation orelse continue;
+            const td = scope.getType(ann) orelse continue;
+            // Find override AST for this field and check for bare identifier.
+            for (ovs) |ob| if (std.mem.eql(u8, ob.name, k)) {
+                if (ob.value.kind != .identifier) break;
+                const id_name = ob.value.kind.identifier.name;
+                if (eval_types.variantLookup(td, ann, id_name, self.allocator)) |v| {
+                    patched_values[ki] = v;
+                }
+                break;
+            };
+        }
+        os = val.Struct{ .keys = os.keys, .values = patched_values, .type_name = os.type_name };
+    }
 
     // All override keys must exist in base
     for (os.keys) |key| if (bs.get(key) == null)
