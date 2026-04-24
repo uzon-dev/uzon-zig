@@ -271,6 +271,10 @@ pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_exp
         if (value != .struct_val) return self.typeErr("value is not a struct", span.line, span.col);
         return value;
     }
+    // §3.6 inline anonymous `union ...` type is accepted opaquely (the parser
+    // lost the member list when collapsing to a `union` category). The
+    // annotation passes through without further checking.
+    if (std.mem.eql(u8, type_name, "union")) return value;
     if (std.mem.eql(u8, type_name, "null")) {
         if (value != .null_val) return self.typeErr("value is not null", span.line, span.col);
         return value;

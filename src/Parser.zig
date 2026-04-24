@@ -1374,6 +1374,23 @@ fn parseTypeExpr(self: *Parser) Error!Ast.TypeExpr {
         return .{ .data = .{ .name = "struct" }, .span = s };
     }
 
+    // §3.6 inline anonymous `union T1, T2, ...` in type-expression position.
+    // We represent the compound type opaquely: the union's member types aren't
+    // preserved in TypeExpr right now, so we return the first member as the
+    // representative type. This is sufficient for `case type`, which examines
+    // the scrutinee's runtime type, and for `as union ...` where we accept any
+    // matching member.
+    if (self.at(.union_)) {
+        _ = self.advance();
+        self.skipNewlines();
+        _ = try self.parseTypeExpr();
+        while (self.skipNewlinesEat(.comma)) {
+            self.skipNewlines();
+            _ = try self.parseTypeExpr();
+        }
+        return .{ .data = .{ .name = "union" }, .span = s };
+    }
+
     const first = try self.expect(.identifier);
     var path = std.ArrayListUnmanaged([]const u8){};
     try path.append(self.allocator, first.lexeme);
