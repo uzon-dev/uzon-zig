@@ -238,6 +238,18 @@ fn evalArithmetic(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *
     if (raw_l.isUndefined() or raw_r.isUndefined())
         return undefinedErr(self, "undefined value in arithmetic operation", ln, rn, raw_l, raw_r, span);
 
+    // §3.7.1: transparent arithmetic on a tagged union is admitted only when
+    // all variants of its declared type have numeric inner types.
+    inline for (.{ raw_l, raw_r }) |side| {
+        if (side == .tagged_union) {
+            for (side.tagged_union.variants) |v| {
+                const tn = v.type_name orelse return self.typeErrSpan("tagged-union variants include non-numeric inner type; arithmetic not transparent", span);
+                const ok = h.parseIntegerTypeName(tn) != null or h.parseFloatTypeName(tn) != null;
+                if (!ok) return self.typeErrSpan("tagged-union variants include non-numeric inner type; arithmetic not transparent", span);
+            }
+        }
+    }
+
     const adopted = h.adoptNumericTypes(raw_l.unwrapTransparent(), raw_r.unwrapTransparent());
     const l = adopted[0];
     const r = adopted[1];
@@ -480,6 +492,12 @@ fn evalEquality(self: *Evaluator, op: Ast.BinaryOp, ln: *const Ast.Node, rn: *co
     if (left == .function or right == .function)
         return self.typeErrSpan("cannot compare functions", span);
     if (left == .tagged_union and right == .tagged_union) {
+        // §3.7.2 + §5.2: two tagged unions of different named types are not
+        // comparable, even if their inner types overlap.
+        if (left.tagged_union.type_name) |ltn| if (right.tagged_union.type_name) |rtn| {
+            if (!std.mem.eql(u8, ltn, rtn))
+                return self.typeErrSpan("cannot compare tagged unions of different named types", span);
+        };
         const eq = h.runtimeEqual(left, right);
         return Value.boolean(if (op == .eq) eq else !eq);
     }
