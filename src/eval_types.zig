@@ -544,9 +544,30 @@ fn stampNamedType(self: *Evaluator, expr_node: *const Ast.Node, td: *const val.T
             result = Value{ .tagged_union = .{ .value = tu.value, .tag = tu.tag, .variants = tu.variants, .type_name = type_name } };
         },
         .union_val => |u| {
-            if (u.type_name) |existing| if (!std.mem.eql(u8, existing, type_name))
-                return self.typeErr("nominal type mismatch: value has a different named type", span.line, span.col);
-            result = Value{ .union_val = .{ .value = u.value, .types = u.types, .type_name = type_name } };
+            // §6.3 v0.15: union→union widening via the member-set subset rule.
+            if (u.type_name) |existing| if (!std.mem.eql(u8, existing, type_name)) {
+                if (td.kind == .union_type) {
+                    const tgt = td.kind.union_type.types;
+                    var all_in = true;
+                    for (u.types) |src_mt| {
+                        var found_in_tgt = false;
+                        for (tgt) |tgt_mt| if (std.mem.eql(u8, src_mt, tgt_mt)) {
+                            found_in_tgt = true;
+                            break;
+                        };
+                        if (!found_in_tgt) {
+                            all_in = false;
+                            break;
+                        }
+                    }
+                    if (!all_in)
+                        return self.typeErr("union widening rejected: source members are not a subset of target", span.line, span.col);
+                } else {
+                    return self.typeErr("nominal type mismatch: value has a different named type", span.line, span.col);
+                }
+            };
+            const types_target = if (td.kind == .union_type) td.kind.union_type.types else u.types;
+            result = Value{ .union_val = .{ .value = u.value, .types = types_target, .type_name = type_name } };
         },
         .struct_val => |s| {
             if (s.type_name) |existing| if (!std.mem.eql(u8, existing, type_name))
