@@ -933,16 +933,31 @@ fn applyOverrides(self: *Evaluator, bs: val.Struct, os: val.Struct, preserve_typ
             const fi_opt = lookupFieldInfo(field_infos, key);
             new_values[i] = try applyFieldOverride(self, base_val, ov, fi_opt, span);
             // §3.9: if the field's declared type is a refinement, run the
-            // predicate on the override value.
-            if (fi_opt) |fi| if (fi.type_annotation) |ann| {
-                if (scope.getType(ann)) |td| if (td.refinement) |rf|
-                    try eval_types.checkRefinement(self, rf, new_values[i], scope, span);
-            };
+            // predicate on the override value. Pull the type annotation from
+            // the named-type FieldInfo when available, otherwise fall back to
+            // the anonymous struct's per-field annotation captured from the
+            // original literal.
+            const ann_opt: ?[]const u8 = if (fi_opt) |fi| fi.type_annotation else bs.getTypeAnnotation(key);
+            if (ann_opt) |ann| {
+                if (scope.getType(ann)) |td| if (td.refinement) |rf| {
+                    if (new_values[i].isNull()) {
+                        try eval_types.checkRefinement(self, rf, new_values[i], scope, span);
+                    } else {
+                        // Adopt to base type then check predicate.
+                        const base = rf.base_type_name;
+                        const adopted = h.adoptToType(new_values[i], base);
+                        if (!h.valueMatchesType(adopted, base))
+                            return self.typeErrSpan("override value does not match refinement base type", span);
+                        try eval_types.checkRefinement(self, rf, adopted, scope, span);
+                        new_values[i] = adopted;
+                    }
+                };
+            }
         } else {
             new_values[i] = base_val;
         }
     }
-    return Value{ .struct_val = .{ .keys = new_keys, .values = new_values, .type_name = preserve_type } };
+    return Value{ .struct_val = .{ .keys = new_keys, .values = new_values, .type_name = preserve_type, .field_type_annotations = bs.field_type_annotations } };
 }
 
 fn applyFieldOverride(self: *Evaluator, base_val: Value, ov: Value, field_info: ?val.TypeDef.FieldInfo, span: Ast.Span) EvalError!Value {

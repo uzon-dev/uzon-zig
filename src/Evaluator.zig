@@ -671,6 +671,10 @@ fn evalStructLiteral(self: *Evaluator, fields: []const Ast.Binding, parent_scope
     const n = fields.len;
     const keys = try self.allocator.alloc([]const u8, n);
     const values = try self.allocator.alloc(Value, n);
+    // §3.2: capture per-field type annotations so `with`-overrides on
+    // anonymous struct bases can re-validate refinement predicates.
+    const field_anns = try self.allocator.alloc(?[]const u8, n);
+    var any_ann = false;
     for (fields, 0..) |f, i| {
         keys[i] = f.name;
         if (child_scope.get(f.name, null)) |v| {
@@ -678,8 +682,20 @@ fn evalStructLiteral(self: *Evaluator, fields: []const Ast.Binding, parent_scope
         } else {
             return self.rtErrSpan("struct field not found after evaluation", f.span);
         }
+        field_anns[i] = blk: {
+            if (f.value.kind == .type_annotation) {
+                const te = f.value.kind.type_annotation.type_expr;
+                if (te.data == .name) break :blk te.data.name;
+            }
+            break :blk null;
+        };
+        if (field_anns[i] != null) any_ann = true;
     }
-    return Value{ .struct_val = .{ .keys = keys, .values = values } };
+    return Value{ .struct_val = .{
+        .keys = keys,
+        .values = values,
+        .field_type_annotations = if (any_ann) field_anns else null,
+    } };
 }
 
 fn evalListLiteral(self: *Evaluator, elements: []const *const Ast.Node, scope: *Scope, exclude: ?[]const u8) EvalError!Value {

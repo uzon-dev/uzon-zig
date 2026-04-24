@@ -51,10 +51,25 @@ pub const Struct = struct {
     keys: []const []const u8,
     values: []const Value,
     type_name: ?[]const u8 = null,
+    /// Per-field type annotations recovered from `field is v as T` in the
+    /// declaring literal. Used to carry refinement type names through
+    /// anonymous struct bases so `with`-overrides can re-check the predicate.
+    field_type_annotations: ?[]const ?[]const u8 = null,
 
     pub fn get(self: Struct, key: []const u8) ?Value {
         for (self.keys, 0..) |k, i| {
             if (std.mem.eql(u8, k, key)) return self.values[i];
+        }
+        return null;
+    }
+
+    pub fn getTypeAnnotation(self: Struct, key: []const u8) ?[]const u8 {
+        const fta = self.field_type_annotations orelse return null;
+        for (self.keys, 0..) |k, i| {
+            if (std.mem.eql(u8, k, key)) {
+                if (i < fta.len) return fta[i];
+                return null;
+            }
         }
         return null;
     }
