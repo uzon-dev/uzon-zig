@@ -127,7 +127,33 @@ pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_exp
                 const tut = td.kind.tagged_union_type;
                 if (!h.isValidVariantTag(tut.variants, nv.tag))
                     return self.typeErrSpan("unknown variant name in tagged union type reuse", expr_node.span);
-                const inner_val = try self.evalNode(nv.value, scope, exclude);
+                var inner_val = try self.evalNode(nv.value, scope, exclude);
+                // §6.3: inner value must conform to the variant's declared
+                // inner type. We only statically type-check primitives here;
+                // named struct/enum/tagged conformance is handled downstream
+                // via stampNamedType / the shorthand resolver.
+                for (tut.variants) |vi| if (std.mem.eql(u8, vi.name, nv.tag)) {
+                    if (vi.type_name) |vtn| {
+                        if (!inner_val.isNull() and !inner_val.isUndefined()) {
+                            const check_vtn = if (scope.getType(vtn)) |vtd|
+                                (if (vtd.refinement) |rf| rf.base_type_name else vtn)
+                            else
+                                vtn;
+                            // Only enforce the match when the resolved name is
+                            // a primitive (numeric / bool / string) — compound
+                            // and named non-refinement types defer to later
+                            // conformance logic.
+                            const is_primitive = std.mem.eql(u8, check_vtn, "bool") or std.mem.eql(u8, check_vtn, "string") or h.parseIntegerTypeName(check_vtn) != null or h.parseFloatTypeName(check_vtn) != null;
+                            if (is_primitive) {
+                                const adopted = h.adoptToType(inner_val, check_vtn);
+                                if (!h.valueMatchesType(adopted, check_vtn))
+                                    return self.typeErrSpan("variant shorthand inner value does not match variant's declared type", expr_node.span);
+                                inner_val = adopted;
+                            }
+                        }
+                    }
+                    break;
+                };
                 const vp = try self.allocator.create(Value);
                 vp.* = inner_val;
                 return Value{ .tagged_union = .{ .value = vp, .tag = nv.tag, .variants = tut.variants, .type_name = tn } };
