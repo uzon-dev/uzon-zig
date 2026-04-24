@@ -1271,8 +1271,16 @@ pub fn evalFunctionCall(self: *Evaluator, callee_node: *const Ast.Node, arg_node
     if (func.return_type.data == .name) {
         const rtn = func.return_type.data.name;
         if (!result.isNull() and !result.isUndefined()) {
-            result = h.adoptToType(result, rtn);
-            if (!h.valueMatchesType(result, rtn)) {
+            // §3.9: refinement return type — check against base + predicate.
+            const check_rtn = if (func_scope.getType(rtn)) |td|
+                (if (td.refinement) |rf| rf.base_type_name else rtn)
+            else
+                rtn;
+            result = h.adoptToType(result, check_rtn);
+            if (func_scope.getType(rtn)) |td| if (td.refinement) |rf| {
+                try eval_types.checkRefinement(self, rf, result, &func_scope, func.body_expr.span);
+            };
+            if (!h.valueMatchesType(result, check_rtn)) {
                 // §3.9: structural conformance for function types
                 if (result == .function) {
                     if (func_scope.getType(rtn)) |td| {
