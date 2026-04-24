@@ -813,7 +813,26 @@ pub fn evalConversion(self: *Evaluator, expr_node: *const Ast.Node, type_expr: *
 
     if (h.parseIntegerTypeName(type_name)) |it| return convertToInteger(self, value, it, span);
     if (h.parseFloatTypeName(type_name)) |ft| return convertToFloat(self, value, ft, span);
-    if (std.mem.eql(u8, type_name, "string")) return convertToString(self, value, span);
+    if (std.mem.eql(u8, type_name, "string")) {
+        // §5.11.2: `to string` on an untagged union is rejected at check time
+        // if any member type is not string-convertible (list / tuple / struct
+        // / function, or an inline compound placeholder).
+        if (value == .union_val) {
+            for (value.union_val.types) |mt| {
+                // List `[T]` / tuple `(…)` are compound-type shapes we can't
+                // stringify; reject the whole conversion up front.
+                if (mt.len > 0 and (mt[0] == '[' or mt[0] == '('))
+                    return self.typeErr("untagged union member type is not string-convertible", span.line, span.col);
+                if (std.mem.eql(u8, mt, "list") or std.mem.eql(u8, mt, "tuple") or std.mem.eql(u8, mt, "struct") or std.mem.eql(u8, mt, "function"))
+                    return self.typeErr("untagged union member type is not string-convertible", span.line, span.col);
+                if (scope.getType(mt)) |td| switch (td.kind) {
+                    .struct_type, .list_type, .function_type => return self.typeErr("untagged union member type is not string-convertible", span.line, span.col),
+                    else => {},
+                };
+            }
+        }
+        return convertToString(self, value, span);
+    }
 
     // Named enum / refinement: dispatch by kind
     if (scope.getType(type_name)) |td| {
