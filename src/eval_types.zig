@@ -114,6 +114,27 @@ pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_exp
             return annotateList(self, expr_node, inner_type, list_val, scope, span);
         };
     }
+
+    // §3.7: `(expr) named Variant as Outer` where Outer is a named tagged
+    // union — use Outer's variants for the tag lookup. Without this
+    // intercept, evalNamedVariant falls through to "type reuse" and checks
+    // the inner value's variants, which may not include the outer tag.
+    if (expr_node.kind == .named_variant and type_expr.data == .name) {
+        const nv = expr_node.kind.named_variant;
+        if (nv.variants.len == 0) {
+            const tn = type_expr.data.name;
+            if (scope.getType(tn)) |td| if (td.kind == .tagged_union_type) {
+                const tut = td.kind.tagged_union_type;
+                if (!h.isValidVariantTag(tut.variants, nv.tag))
+                    return self.typeErrSpan("unknown variant name in tagged union type reuse", expr_node.span);
+                const inner_val = try self.evalNode(nv.value, scope, exclude);
+                const vp = try self.allocator.create(Value);
+                vp.* = inner_val;
+                return Value{ .tagged_union = .{ .value = vp, .tag = nv.tag, .variants = tut.variants, .type_name = tn } };
+            };
+        }
+    }
+
     const value = try self.evalNode(expr_node, scope, exclude);
 
     const type_name = switch (type_expr.data) {
