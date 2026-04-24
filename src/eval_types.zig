@@ -113,11 +113,34 @@ pub fn evalTypeAnnotation(self: *Evaluator, expr_node: *const Ast.Node, type_exp
         .name => |n| n,
         .list => |inner_type| return annotateList(self, expr_node, inner_type, value, scope, span),
         .path => |segments| return annotatePath(self, expr_node, segments, type_expr, value, scope, exclude, span),
-        .tuple => {
+        .tuple => |elem_types| {
             if (value.isUndefined()) return .undefined;
             // §6.1: null does not conform to a tuple type.
             if (value == .null_val) return self.typeErrSpan("cannot annotate null as tuple type", span);
-            return value;
+            if (value != .tuple) return self.typeErrSpan("value is not a tuple", span);
+            // §3.3: length must match; each element must conform.
+            if (value.tuple.elements.len != elem_types.len)
+                return self.typeErrSpan("tuple length does not match declared type", span);
+            const adopted = try self.allocator.alloc(Value, elem_types.len);
+            for (elem_types, value.tuple.elements, 0..) |et_e, v_e, j| {
+                const et_name_opt: ?[]const u8 = switch (et_e.data) {
+                    .name => |n| n,
+                    else => null,
+                };
+                if (et_name_opt) |et_name| {
+                    if (v_e.isUndefined() or v_e.isNull()) {
+                        adopted[j] = v_e;
+                    } else {
+                        const a = h.adoptToType(v_e, et_name);
+                        if (!h.valueMatchesType(a, et_name))
+                            return self.typeErrSpan("tuple element type does not match declared type", span);
+                        adopted[j] = a;
+                    }
+                } else {
+                    adopted[j] = v_e;
+                }
+            }
+            return Value{ .tuple = .{ .elements = adopted } };
         },
         else => {
             if (value.isUndefined()) return .undefined;
