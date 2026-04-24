@@ -617,6 +617,7 @@ fn staticCategoryOf(node: *const Ast.Node) ?[]const u8 {
     return switch (node.kind) {
         .conversion => |cv| typeExprCategory(&cv.type_expr),
         .type_annotation => |ta| typeExprCategory(&ta.type_expr),
+        .grouping => |g| staticCategoryOf(g.expr),
         .string_literal => "string",
         .integer_literal => "integer",
         .float_literal, .inf_literal, .nan_literal => "float",
